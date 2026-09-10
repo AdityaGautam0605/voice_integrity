@@ -1,0 +1,33 @@
+# --- secrets: never commit these ---------------------------------------
+keys/
+*.pem
+*.key
+*.p12
+.env
+.envrc
+
+# --- corpora, features, checkpoints: too large, and regenerable --------
+**/data/raw/
+**/data/features/
+**/data/turntaking/
+**/data/*.db
+**/models/checkpoints/*.pt
+**/models/exported/*.onnx
+**/cache/
+
+# --- python -----------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# --- experiment tracking ----------------------------------------------
+wandb/
+runs/
+
+# --- os ---------------------------------------------------------------
+.DS_Store
+Thumbs.db

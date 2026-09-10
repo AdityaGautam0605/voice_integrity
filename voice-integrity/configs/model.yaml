@@ -1,0 +1,49 @@
+# Fixed audio geometry.  These are NOT runtime tunables: window_samples must
+# equal the training crop of the detection head or accuracy degrades silently.
+audio:
+  sample_rate: 16000
+  window_samples: 64600      # 4.04 s @ 16 kHz - AASIST's training crop
+  hop_samples: 16000         # 1 s; use 32000 on CPU tiers
+  vad_frame: 512
+  vad_threshold: 0.5
+
+frontend:
+  model_id: facebook/wav2vec2-xls-r-300m
+  hidden_dim: 1024
+  frozen: true               # false only for the final fine-tune run
+  unfreeze_top_n: 6          # applies when frozen: false
+  layer: -1                  # which hidden state to take; -1 = last
+
+head:
+  arch: aasist
+  gat_dims: [64, 32]
+  pool_ratios: [0.5, 0.7, 0.5, 0.5]
+  temperatures: [2.0, 2.0, 100.0, 100.0]
+  checkpoint: models/checkpoints/codec_robust.pt
+  baseline_checkpoint: models/checkpoints/baseline.pt   # NEVER delete
+
+speaker:
+  enabled: true
+  model_id: speechbrain/spkrec-ecapa-voxceleb
+  embedding_dim: 192
+
+prosody:
+  enabled: true
+
+liveness:
+  enabled: true
+  min_utterance_ms: 250      # ignore blips shorter than this
+  resume_window_ms: 700      # A must not resume within T for a speaker change
+  backchannel_max_ms: 900    # short utterances treated as backchannels
+  fast_response_ms: 150      # "sub-floor" threshold for the left-tail test
+  min_transitions: 4         # below this, emit null rather than a weak LLR
+
+fusion:
+  llr_clamp: 4.0
+  risk_scale: 4.0            # risk = 100 * sigmoid(posterior / risk_scale)
+  weights:
+    spoof: 1.0
+    speaker: 0.6
+    prosody: 0.15
+    liveness: 0.8
+  calibration: configs/calibration.json

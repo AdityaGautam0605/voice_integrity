@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vif"
+version = "0.1.0"
+description = "Voice Integrity Verification Framework - backend"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# UP042: str+Enum is deliberate - it keeps JSON round-tripping on 3.10,
+#        where enum.StrEnum does not exist.
+# B027:  BaseVAD.reset is an optional hook, not a required override.
+ignore = ["E501", "UP042", "B027"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"

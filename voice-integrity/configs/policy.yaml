@@ -1,0 +1,38 @@
+# Bands are the default operating points.  Tiers override them by the value of
+# whatever action the call is gating.
+version: "policy-1.0.0"
+
+bands:
+  green: [0, 40]
+  amber: [40, 75]
+  red:   [75, 100]
+
+tiers:
+  - name: routine
+    max_value: 50000
+    amber: 55
+    red: 85
+  - name: elevated
+    max_value: 1000000
+    amber: 45
+    red: 78
+  - name: high_value
+    max_value: null          # everything above the previous tier
+    amber: 35
+    red: 70
+
+actions:
+  green: proceed
+  amber: challenge
+  red: gate_action           # never terminate_call
+
+# A missing or unverifiable verdict is treated as elevated risk, not as
+# absence of risk.  See SEC-01.
+fail_closed: true
+
+metadata_prior:
+  first_contact: 0.8
+  outside_business_hours: 0.5
+  above_tier_threshold: 0.6
+  known_contact: -1.2
+  prior_verified_calls: -0.8

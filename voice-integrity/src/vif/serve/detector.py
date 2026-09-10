@@ -1,0 +1,218 @@
+"""Detector wrapper (L2/L3).
+
+Deliberately synchronous and blocking.  The async layer above is responsible
+for keeping it off the event loop, and making that boundary explicit here
+prevents the single worst bug in this design: calling torch inline from the
+frame-receive coroutine, which stalls ingestion, drops audio, and smears the
+very timestamps the liveness branch depends on.  The two branches then corrupt
+each other, which is a miserable thing to debug at 3am.
+
+Two backends:
+
+    TorchDetector  full stack, the accuracy numbers we report
+    OnnxDetector   int8 CPU, what makes the offline laptop demo possible
+
+Both expose the same `score_window`, so the session layer never knows which is
+running.
+"""
+
+from __future__ import annotations
+
+import threading
+from abc import ABC, abstractmethod
+from pathlib import Path
+
+import numpy as np
+
+from vif.common.config import ModelConfig
+from vif.common.logging import get_logger
+
+log = get_logger(__name__)
+
+
+class BaseDetector(ABC):
+    """Scores one window.  Higher means more synthetic, always."""
+
+    model_version: str = "unknown"
+
+    @abstractmethod
+    def score_window(self, wav: np.ndarray) -> float: ...
+
+    def embed_speaker(self, wav: np.ndarray) -> np.ndarray | None:
+        """Speaker embedding, or None when the branch is unavailable."""
+        return None
+
+
+class TorchDetector(BaseDetector):
+    """Front end plus head, in one process.
+
+    Thread-safe by a coarse lock: the session layer dispatches to an executor,
+    so several calls can arrive concurrently and torch modules are not
+    reentrant in a way we want to rely on.
+    """
+
+    def __init__(
+        self,
+        config: ModelConfig,
+        checkpoint: str | Path | None = None,
+        device: str = "cpu",
+        load_speaker: bool = True,
+    ):
+        import torch
+
+        from vif.models.frontend import SSLFrontend
+        from vif.models.heads import load_checkpoint
+
+        self._torch = torch
+        self.config = config
+        self.device = device
+        self._lock = threading.Lock()
+
+        self.frontend = SSLFrontend(config.frontend).to(device).eval()
+
+        checkpoint = checkpoint or config.head.checkpoint
+        self.head, meta = load_checkpoint(
+            checkpoint,
+            config.head,
+            feat_dim=self.frontend.hidden_dim,
+            expect_window=config.audio.window_samples,
+            expect_frontend=config.frontend.model_id,
+        )
+        self.head = self.head.to(device).eval()
+        self.model_version = (
+            f"{meta.get('arch', 'head')}-{meta.get('condition', 'unknown')}-e{meta.get('epoch', 0)}"
+        )
+
+        self.speaker = None
+        if load_speaker and config.speaker.enabled:
+            self.speaker = _load_speaker_model(config.speaker.model_id, device)
+
+    def score_window(self, wav: np.ndarray) -> float:
+        torch = self._torch
+        expected = self.config.audio.window_samples
+        if len(wav) != expected:
+            raise ValueError(f"expected {expected} samples, got {len(wav)}")
+
+        with self._lock, torch.inference_mode():
+            tensor = (
+                torch.from_numpy(np.asarray(wav, dtype=np.float32)).unsqueeze(0).to(self.device)
+            )
+            feats = self.frontend(tensor)
+            logits = self.head(feats)
+            score = self.head.score_from_logits(logits)
+            return float(score.item())
+
+    def embed_speaker(self, wav: np.ndarray) -> np.ndarray | None:
+        if self.speaker is None:
+            return None
+        torch = self._torch
+        with self._lock, torch.inference_mode():
+            tensor = (
+                torch.from_numpy(np.asarray(wav, dtype=np.float32)).unsqueeze(0).to(self.device)
+            )
+            emb = self.speaker.encode_batch(tensor)
+            return emb.squeeze().cpu().numpy()
+
+
+class OnnxDetector(BaseDetector):
+    """int8 CPU inference.
+
+    The tier the demo actually runs on, because a cloud tunnel cannot carry
+    WebRTC UDP and venue wifi cannot be trusted.
+    """
+
+    def __init__(self, model_path: str | Path, window_samples: int = 64600, version: str = "onnx"):
+        import onnxruntime as ort
+
+        self.window_samples = window_samples
+        self.model_version = version
+        options = ort.SessionOptions()
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        options.intra_op_num_threads = 0  # let ORT pick
+        self.session = ort.InferenceSession(
+            str(model_path), options, providers=["CPUExecutionProvider"]
+        )
+        self.input_name = self.session.get_inputs()[0].name
+        self._lock = threading.Lock()
+        log.info("loaded ONNX detector from %s", model_path)
+
+    def score_window(self, wav: np.ndarray) -> float:
+        if len(wav) != self.window_samples:
+            raise ValueError(f"expected {self.window_samples} samples, got {len(wav)}")
+        batch = np.asarray(wav, dtype=np.float32)[None, :]
+        with self._lock:
+            logits = self.session.run(None, {self.input_name: batch})[0]
+        return float(logits[0, 1] - logits[0, 0])
+
+
+class StubDetector(BaseDetector):
+    """Deterministic stand-in with no model weights.
+
+    Exists so the whole pipeline - ingest, VAD, windowing, fusion, policy,
+    signing, audit log - can be exercised end to end with no downloads.  It
+    reads the spectral tilt of the window, which correlates weakly with
+    synthetic audio but is emphatically not a detector.  Never ship it.
+    """
+
+    model_version = "stub-0"
+
+    def __init__(self, window_samples: int = 64600, bias: float = 0.0):
+        self.window_samples = window_samples
+        self.bias = bias
+
+    def score_window(self, wav: np.ndarray) -> float:
+        wav = np.asarray(wav, dtype=np.float32)
+        spectrum = np.abs(np.fft.rfft(wav * np.hanning(len(wav))))
+        spectrum = spectrum / (spectrum.sum() + 1e-9)
+        split = len(spectrum) // 4
+        low = float(spectrum[:split].sum())
+        high = float(spectrum[split:].sum())
+        tilt = np.log((high + 1e-6) / (low + 1e-6))
+        return float(np.clip(tilt + self.bias, -6.0, 6.0))
+
+    def embed_speaker(self, wav: np.ndarray) -> np.ndarray | None:
+        rng = np.random.default_rng(abs(int(np.sum(wav) * 1000)) % (2**31))
+        vec = rng.normal(size=192).astype(np.float32)
+        return vec / (np.linalg.norm(vec) + 1e-9)
+
+
+def _load_speaker_model(model_id: str, device: str):
+    try:
+        from speechbrain.inference import EncoderClassifier
+
+        return EncoderClassifier.from_hparams(
+            source=model_id,
+            savedir=f"cache/speechbrain/{model_id.replace('/', '_')}",
+            run_opts={"device": device},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("speaker model unavailable (%s) - branch B will abstain", exc)
+        return None
+
+
+def build_detector(
+    config: ModelConfig,
+    checkpoint: str | Path | None = None,
+    backend: str = "auto",
+    device: str = "cpu",
+) -> BaseDetector:
+    """Pick a backend.
+
+    'auto' prefers the real model and falls back to the stub, so a machine
+    without weights still runs the full pipeline rather than failing at import.
+    """
+    if backend == "stub":
+        log.warning("using StubDetector - no real detection is happening")
+        return StubDetector(config.audio.window_samples)
+
+    if backend in ("onnx",):
+        path = Path("models/exported/detector-int8.onnx")
+        return OnnxDetector(path, config.audio.window_samples)
+
+    try:
+        return TorchDetector(config, checkpoint=checkpoint, device=device)
+    except Exception as exc:  # noqa: BLE001
+        if backend == "torch":
+            raise
+        log.warning("torch backend unavailable (%s) - falling back to StubDetector", exc)
+        return StubDetector(config.audio.window_samples)

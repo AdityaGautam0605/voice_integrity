@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.envrc
+
+# Data and artifacts are never committed
+data/raw/
+data/features/
+data/turntaking/
+models/checkpoints/*.pt
+models/exported/*.onnx
+cache/
+runs/
+wandb/
+
+# Secrets
+keys/
+*.pem
+*.key
+
+.pytest_cache/
+.ruff_cache/

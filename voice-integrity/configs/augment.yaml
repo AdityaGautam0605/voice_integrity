@@ -1,0 +1,26 @@
+# Training-time degradation.  Mirrors what the telephone network does to audio
+# before the detector ever sees it.  Verify AMR-NB encoding is available:
+#   ffmpeg -encoders | grep amr
+apply_probability: 0.7
+
+codecs:
+  - name: g711_ulaw
+    rate: 8000
+    weight: 0.35
+  - name: amr_nb
+    rate: 8000
+    bitrate: 12200
+    weight: 0.35
+  - name: opus
+    rate: 16000
+    bitrate: 16000
+    weight: 0.30
+
+packet_loss:
+  probability: 0.3
+  span_ms: [20, 60]
+  max_drops: 4
+
+noise:
+  probability: 0.4
+  snr_db: [15, 35]
