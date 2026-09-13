@@ -1,38 +1,23 @@
-# Bands are the default operating points.  Tiers override them by the value of
-# whatever action the call is gating.
 version: "policy-1.0.0"
 
-bands:
-  green: [0, 40]
-  amber: [40, 75]
-  red:   [75, 100]
-
-tiers:
-  - name: routine
-    max_value: 50000
-    amber: 55
-    red: 85
-  - name: elevated
-    max_value: 1000000
-    amber: 45
-    red: 78
-  - name: high_value
-    max_value: null          # everything above the previous tier
-    amber: 35
-    red: 70
-
+# The score gates the sensitive action.  It never ends the call - a config
+# that tries to is rejected at load.
 actions:
-  green: proceed
-  amber: challenge
-  red: gate_action           # never terminate_call
+  green: PROCEED
+  amber: CHALLENGE
+  red: GATE_ACTION
 
-# A missing or unverifiable verdict is treated as elevated risk, not as
-# absence of risk.  See SEC-01.
+# A missing or unverifiable verdict is elevated risk, not absence of risk.
 fail_closed: true
+challenge_on_amber: true
+identity_warning: true
 
-metadata_prior:
-  first_contact: 0.8
-  outside_business_hours: 0.5
-  above_tier_threshold: 0.6
-  known_contact: -1.2
-  prior_verified_calls: -0.8
+security:
+  sign_verdicts: true        # Ed25519 over the final verdict
+  api_token: ""              # empty = open; set VIF_API_TOKEN when deployed
+  audit_log: true            # hash-chained record of verdicts
+  encrypt_templates: true    # AES-256-GCM for stored voiceprints
+
+  # Production roadmap, implemented but defaulted off for the prototype.
+  merkle_checkpoints: false  # signed Merkle roots over the audit log
+  cancelable_templates: false  # revocable, unlinkable biometric templates

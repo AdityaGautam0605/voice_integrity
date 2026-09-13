@@ -1,10 +1,10 @@
 """Command-line entry points.
 
-python -m vif.cli serve            start the API
-python -m vif.cli keys             generate a signing key pair
-python -m vif.cli check            startup guards and environment preflight
-python -m vif.cli audit            verify the audit chain
-python -m vif.cli demo             run a synthetic call end to end
+python -m vif.cli serve     start the API
+python -m vif.cli keys      generate a verdict signing key pair
+python -m vif.cli check     startup guards and environment preflight
+python -m vif.cli audit     verify the audit chain
+python -m vif.cli demo      run a synthetic session end to end
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ def cmd_keys(args: argparse.Namespace) -> int:
     keys_dir = Path(args.out)
     pair = generate_keypair()
     save_keypair(pair, keys_dir / "verdict_ed25519.pem", keys_dir / "verdict_ed25519.pub.pem")
-    print(f"key_id: {pair.key_id}")
-    print(f"private: {keys_dir / 'verdict_ed25519.pem'}  (keep out of version control)")
+    print(f"key_id:  {pair.key_id}")
+    print(f"private: {keys_dir / 'verdict_ed25519.pem'}  (never commit this)")
     print(f"public:  {keys_dir / 'verdict_ed25519.pub.pem'}  (ship to consumers)")
     return 0
 
@@ -44,17 +44,32 @@ def cmd_check(args: argparse.Namespace) -> int:
     """Preflight.  Everything that would otherwise fail silently."""
     ok = True
     config = load_config(args.config)
-    print("configuration")
-    print(
-        f"  window      {config.model.audio.window_samples} samples "
-        f"({config.model.audio.window_seconds:.2f} s)"
-    )
-    print(
-        f"  hop         {config.model.audio.hop_samples} samples "
-        f"({config.model.audio.hop_seconds:.2f} s)"
-    )
-    print(f"  front end   {config.model.frontend.model_id}")
-    print(f"  policy      {config.policy.version}, {len(config.policy.tiers)} tiers")
+
+    print("audio")
+    audio = config.model.audio
+    print(f"  window        {audio.window_samples} samples ({audio.window_seconds:.2f} s)")
+    print(f"  hop           {audio.hop_samples} samples ({audio.hop_seconds:.2f} s)")
+
+    print("\nbranches")
+    print(f"  spoof         enabled  ({config.model.head.arch})")
+    print(f"  speaker       {'enabled' if config.model.speaker.enabled else 'disabled'}")
+    print(f"  prosody       {'enabled' if config.model.prosody.enabled else 'disabled'}")
+    print(f"  liveness      {'enabled' if config.model.liveness.enabled else 'disabled'}")
+
+    print("\nthresholds")
+    scoring = config.model.scoring
+    print(f"  amber         {scoring.amber_threshold}")
+    print(f"  red           {scoring.red_threshold}")
+    print(f"  speaker       {scoring.speaker_threshold}")
+    print(f"  smoothing     {scoring.smoothing_windows} window(s)")
+
+    print("\nsecurity")
+    security = config.security
+    print(f"  sign verdicts {'yes' if security.sign_verdicts else 'no'}")
+    print(f"  audit log     {'yes' if security.audit_log else 'no'}")
+    print(f"  api token     {'set' if security.api_token else 'not set (open)'}")
+    print(f"  merkle        {'on' if security.merkle_checkpoints else 'off (roadmap)'}")
+    print(f"  cancelable    {'on' if security.cancelable_templates else 'off (roadmap)'}")
 
     print("\ncodec support")
     from vif.data.augment import check_ffmpeg_codecs, ffmpeg_available
@@ -76,16 +91,15 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(f"  {label:<14} {'present' if path.exists() else 'absent'}  {path}")
 
     print("\ncalibration")
-    calib = config.path(config.model.fusion.calibration)
+    calib = config.path(config.model.scoring.calibration)
     if calib.exists():
-        blob = json.loads(calib.read_text(encoding="utf-8"))
-        for branch, values in blob.items():
+        for branch, values in json.loads(calib.read_text(encoding="utf-8")).items():
             split = values.get("fitted_on", "?")
             flag = "  <-- CONTAMINATED" if split == "eval" else ""
             print(f"  {branch:<10} fitted on {split}{flag}")
             ok &= split != "eval"
     else:
-        print("  absent - scores will pass through uncalibrated")
+        print("  absent - probabilities will be monotone but not calibrated")
 
     print("\nmetric harness")
     from vif.eval.metrics import sanity_check_random
@@ -109,37 +123,36 @@ def cmd_audit(args: argparse.Namespace) -> int:
     for entry in audit.entries(args.limit):
         payload = entry.payload.get("payload", {})
         print(
-            f"  #{entry.seq:<5} {payload.get('call_id', '?'):<24} "
-            f"risk={payload.get('risk', '?'):<6} band={payload.get('band', '?'):<6} "
-            f"{entry.entry_hash[:12]}"
+            f"  #{entry.seq:<5} {payload.get('session_id', '?'):<38} "
+            f"p={payload.get('spoof_probability', '?'):<8} "
+            f"{payload.get('risk', '?'):<6} {entry.entry_hash[:12]}"
         )
     audit.close()
     return 0 if valid else 1
 
 
 def cmd_demo(args: argparse.Namespace) -> int:
-    """Run one synthetic call and print the verdict."""
+    """Run one synthetic session and print the verdict."""
     from vif.common.types import Side
-    from vif.eval.calibration import Calibrator
     from vif.serve.adapters.file import SyntheticAdapter
     from vif.serve.detector import build_detector
     from vif.serve.session import CallSession
     from vif.serve.vad import build_vad
 
     config = load_config(args.config)
+    if args.liveness:
+        config.model.liveness.enabled = True
 
     async def go() -> int:
         adapter = SyntheticAdapter(n_turns=args.turns, pipeline_floor_ms=args.floor, realtime=False)
         session = CallSession(
-            call_id="cli-demo",
+            session_id="cli-demo",
             config=config,
             detector=build_detector(config.model, backend=args.backend),
             vad=build_vad("auto", config.model.audio.vad_frame),
-            on_score=None,
-            calibrator=Calibrator({}),
-            metadata={"first_contact": True, "transaction_value": args.value},
         )
-        session.liveness.set_rtt(await adapter.rtt_ms())
+        if session.liveness is not None:
+            session.liveness.set_rtt(await adapter.rtt_ms())
         await asyncio.gather(
             session.consume(adapter, Side.CALLER),
             session.consume(adapter, Side.AGENT),
@@ -158,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("serve", help="start the API server")
-    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--host", default="0.0.0.0")  # noqa: S104 - containerised
     p.add_argument("--port", type=int, default=8000)
     p.set_defaults(func=cmd_serve)
 
@@ -174,10 +187,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=20)
     p.set_defaults(func=cmd_audit)
 
-    p = sub.add_parser("demo", help="run a synthetic call end to end")
+    p = sub.add_parser("demo", help="run a synthetic session end to end")
     p.add_argument("--turns", type=int, default=14)
     p.add_argument("--floor", type=float, default=0.0, help="simulated pipeline floor in ms")
-    p.add_argument("--value", type=float, default=5_000_000)
+    p.add_argument("--liveness", action="store_true", help="enable branch D for this run")
     p.add_argument("--backend", default="stub", choices=["auto", "stub", "torch", "onnx"])
     p.set_defaults(func=cmd_demo)
 

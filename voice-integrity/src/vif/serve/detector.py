@@ -18,6 +18,7 @@ running.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -30,10 +31,29 @@ from vif.common.logging import get_logger
 log = get_logger(__name__)
 
 
+def file_checksum(path: str | Path, length: int = 12) -> str:
+    """Short SHA-256 of a model artifact.
+
+    Replaces artifact signing for the prototype.  A checksum does not prove
+    who produced the weights, but it does pin *which* weights produced a given
+    verdict - which is the property that makes a result reproducible and an
+    accidental swap visible.  Signing is the production step.
+    """
+    path = Path(path)
+    if not path.exists():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()[:length]
+
+
 class BaseDetector(ABC):
     """Scores one window.  Higher means more synthetic, always."""
 
     model_version: str = "unknown"
+    model_checksum: str = ""
 
     @abstractmethod
     def score_window(self, wav: np.ndarray) -> float: ...
@@ -82,6 +102,7 @@ class TorchDetector(BaseDetector):
         self.model_version = (
             f"{meta.get('arch', 'head')}-{meta.get('condition', 'unknown')}-e{meta.get('epoch', 0)}"
         )
+        self.model_checksum = file_checksum(checkpoint)
 
         self.speaker = None
         if load_speaker and config.speaker.enabled:
@@ -133,6 +154,7 @@ class OnnxDetector(BaseDetector):
             str(model_path), options, providers=["CPUExecutionProvider"]
         )
         self.input_name = self.session.get_inputs()[0].name
+        self.model_checksum = file_checksum(model_path)
         self._lock = threading.Lock()
         log.info("loaded ONNX detector from %s", model_path)
 
@@ -155,6 +177,7 @@ class StubDetector(BaseDetector):
     """
 
     model_version = "stub-0"
+    model_checksum = "nostub"
 
     def __init__(self, window_samples: int = 64600, bias: float = 0.0):
         self.window_samples = window_samples

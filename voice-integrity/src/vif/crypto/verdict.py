@@ -136,7 +136,7 @@ class VerdictSigner:
         signature = self.keypair.private_key.sign(canonical_encode(payload))
         return Verdict(
             payload=payload,
-            alg="Ed25519",
+            algorithm="Ed25519",
             key_id=self.keypair.key_id,
             signature=base64.b64encode(signature).decode(),
         )
@@ -160,8 +160,8 @@ class VerdictVerifier:
         Never raises.  A verifier that throws is a verifier a caller wraps in
         a bare except, and then everything passes.
         """
-        if verdict.alg != "Ed25519":
-            return False, f"unsupported algorithm: {verdict.alg}"
+        if verdict.algorithm != "Ed25519":
+            return False, f"unsupported algorithm: {verdict.algorithm}"
         if not verdict.signature:
             return False, "verdict carries no signature"
 
@@ -173,7 +173,7 @@ class VerdictVerifier:
         except Exception as exc:  # noqa: BLE001
             return False, f"malformed signature: {exc}"
 
-        age_ms = int(time.time() * 1000) - verdict.payload.ts_ms
+        age_ms = int(time.time() * 1000) - verdict.payload.timestamp
         if age_ms > self.max_age_ms:
             return False, f"verdict is stale ({age_ms / 1000:.0f}s old) - possible replay"
         if age_ms < -60_000:

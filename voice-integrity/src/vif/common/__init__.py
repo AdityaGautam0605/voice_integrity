@@ -1,13 +1,28 @@
 from vif.common.config import AppConfig, load_config
-from vif.common.types import Band, BranchScores, ScoreFrame, Side, TurnEvent, Verdict
+from vif.common.types import (
+    Action,
+    LivenessFeatures,
+    Risk,
+    SessionInfo,
+    Side,
+    SpeakerStatus,
+    StreamMessage,
+    TurnEvent,
+    Verdict,
+    VerdictPayload,
+)
 
 __all__ = [
     "AppConfig",
     "load_config",
-    "Band",
-    "BranchScores",
-    "ScoreFrame",
+    "Action",
+    "LivenessFeatures",
+    "Risk",
+    "SessionInfo",
     "Side",
+    "SpeakerStatus",
+    "StreamMessage",
     "TurnEvent",
     "Verdict",
+    "VerdictPayload",
 ]

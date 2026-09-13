@@ -1,48 +1,45 @@
 """Policy evaluation (L5).
 
-Two rules encoded here that are easy to get wrong.
+Deliberately thin.  The scoring layer already produced a risk band from two
+printable thresholds; this maps that band to an action and attaches a reason a
+human can read.
+
+Two rules are enforced in code rather than left to documentation.
 
 **The score gates the action, never the call.**  A trustworthy score needs
 10-15 seconds of speech that a live conversation does not politely provide, so
-by the time we are confident the social engineering is already underway.  The
-resolution is to put the decision where the loss actually occurs: the approval,
-the disclosure, the reset.  A configuration that tries to terminate calls is
-rejected at load (FR-PO-02).
+the decision belongs where the loss occurs: the approval, the disclosure, the
+reset.  A configuration that tries to terminate calls is rejected at load.
 
-**Thresholds are tiered by what is at stake.**  A single global operating
-point is non-conforming.  A five-thousand-rupee transfer and a fifty-lakh
-transfer should not share a threshold, because the cost of a false alarm
-relative to a miss is completely different between them.
+**Fail closed.**  A missing or unverifiable verdict is elevated risk, not
+absence of risk - otherwise the cheapest attack on the whole system is a cut
+network cable rather than a voice clone.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from vif.common.config import PolicyConfig, TierConfig
+from vif.common.config import PolicyConfig
 from vif.common.logging import get_logger
-from vif.common.types import Action, Band
+from vif.common.types import Action, Risk, SpeakerStatus
 
 log = get_logger(__name__)
 
 
 @dataclass
 class Decision:
-    band: Band
+    risk: Risk
     action: Action
-    tier: str
-    amber_threshold: float
-    red_threshold: float
     reason: str
+    identity_warning: bool = False
 
     def as_dict(self) -> dict:
         return {
-            "band": self.band.value,
+            "risk": self.risk.value,
             "action": self.action.value,
-            "tier": self.tier,
-            "amber_threshold": self.amber_threshold,
-            "red_threshold": self.red_threshold,
             "reason": self.reason,
+            "identity_warning": self.identity_warning,
         }
 
 
@@ -50,69 +47,35 @@ class PolicyEngine:
     def __init__(self, config: PolicyConfig | None = None):
         self.config = config or PolicyConfig()
 
-    def select_tier(self, transaction_value: float | None) -> TierConfig:
-        """Pick the tier whose ceiling the transaction falls under.
-
-        With no value supplied we use the most conservative tier, because an
-        unknown stake is not the same as a low one.
-        """
-        if not self.config.tiers:
-            return TierConfig(name="default", max_value=None, amber=40.0, red=75.0)
-
-        if transaction_value is None:
-            return self.config.tiers[-1]
-
-        for tier in self.config.tiers:
-            if tier.max_value is None or transaction_value <= tier.max_value:
-                return tier
-        return self.config.tiers[-1]
-
     def evaluate(
         self,
-        risk: float,
-        transaction_value: float | None = None,
+        risk: Risk,
+        spoof_probability: float,
+        speaker_status: SpeakerStatus = SpeakerStatus.NOT_ENROLLED,
         verdict_verified: bool = True,
     ) -> Decision:
-        """Map a risk score to a band and an action.
-
-        `verdict_verified=False` short-circuits to the most severe outcome.
-        A missing or unverifiable verdict is elevated risk, not absence of
-        risk - otherwise the cheapest attack on this system is a cut network
-        cable rather than a voice clone (SEC-01).
-        """
-        tier = self.select_tier(transaction_value)
-
+        """Map a band to an action, with a reason worth showing an operator."""
         if self.config.fail_closed and not verdict_verified:
             return Decision(
-                band=Band.RED,
-                action=Action(self.config.actions.get("red", "gate_action")),
-                tier=tier.name,
-                amber_threshold=tier.amber,
-                red_threshold=tier.red,
+                risk=Risk.RED,
+                action=Action(self.config.actions.red),
                 reason="verdict missing or signature invalid - failing closed",
+                identity_warning=False,
             )
 
-        if risk >= tier.red:
-            band = Band.RED
-            reason = f"risk {risk:.1f} at or above red threshold {tier.red} for tier '{tier.name}'"
-        elif risk >= tier.amber:
-            band = Band.AMBER
-            reason = (
-                f"risk {risk:.1f} at or above amber threshold {tier.amber} for tier '{tier.name}'"
-            )
-        else:
-            band = Band.GREEN
-            reason = f"risk {risk:.1f} below amber threshold {tier.amber} for tier '{tier.name}'"
+        action = Action(getattr(self.config.actions, risk.value.lower()))
 
-        action = Action(self.config.actions.get(band.value, "proceed"))
-        return Decision(
-            band=band,
-            action=action,
-            tier=tier.name,
-            amber_threshold=tier.amber,
-            red_threshold=tier.red,
-            reason=reason,
-        )
+        reason = {
+            Risk.RED: f"spoof probability {spoof_probability:.2f} at or above the red threshold",
+            Risk.AMBER: f"spoof probability {spoof_probability:.2f} at or above the amber threshold",
+            Risk.GREEN: f"spoof probability {spoof_probability:.2f} below the amber threshold",
+        }[risk]
 
-    def band_only(self, risk: float, transaction_value: float | None = None) -> Band:
-        return self.evaluate(risk, transaction_value).band
+        # The identity branch raises a separate flag rather than moving the
+        # band.  A voice that is synthetic and a voice that belongs to someone
+        # else are different findings and deserve different words.
+        warning = self.config.identity_warning and speaker_status == SpeakerStatus.MISMATCH
+        if warning:
+            reason += "; enrolled voiceprint does not match"
+
+        return Decision(risk=risk, action=action, reason=reason, identity_warning=warning)

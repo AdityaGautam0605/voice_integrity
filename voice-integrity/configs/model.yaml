@@ -1,18 +1,20 @@
-# Fixed audio geometry.  These are NOT runtime tunables: window_samples must
-# equal the training crop of the detection head or accuracy degrades silently.
+# Fixed audio geometry.  window_samples is NOT a runtime tunable: it must
+# equal the training crop of the detection head, or accuracy degrades with no
+# error to show for it.  A mismatch raises at startup.
 audio:
   sample_rate: 16000
   window_samples: 64600      # 4.04 s @ 16 kHz - AASIST's training crop
-  hop_samples: 16000         # 1 s; use 32000 on CPU tiers
+  hop_samples: 16000         # 1 s; raise to 32000 on a slow CPU
   vad_frame: 512
   vad_threshold: 0.5
 
 frontend:
+  enabled: true              # false runs a raw-waveform detector instead
   model_id: facebook/wav2vec2-xls-r-300m
   hidden_dim: 1024
   frozen: true               # false only for the final fine-tune run
-  unfreeze_top_n: 6          # applies when frozen: false
-  layer: -1                  # which hidden state to take; -1 = last
+  unfreeze_top_n: 6
+  layer: -1
 
 head:
   arch: aasist
@@ -23,27 +25,29 @@ head:
   baseline_checkpoint: models/checkpoints/baseline.pt   # NEVER delete
 
 speaker:
-  enabled: true
+  enabled: true              # independent branch; reported, never fused
   model_id: speechbrain/spkrec-ecapa-voxceleb
   embedding_dim: 192
 
 prosody:
-  enabled: true
+  enabled: false             # language-dependent; off unless per-language tuned
 
 liveness:
-  enabled: true
-  min_utterance_ms: 250      # ignore blips shorter than this
-  resume_window_ms: 700      # A must not resume within T for a speaker change
-  backchannel_max_ms: 900    # short utterances treated as backchannels
-  fast_response_ms: 150      # "sub-floor" threshold for the left-tail test
-  min_transitions: 4         # below this, emit null rather than a weak LLR
+  enabled: false             # needs both directions and 10-20 turns; stretch
+  min_utterance_ms: 250
+  resume_window_ms: 700
+  backchannel_max_ms: 900
+  fast_response_ms: 150
+  min_transitions: 4
 
-fusion:
-  llr_clamp: 4.0
-  risk_scale: 4.0            # risk = 100 * sigmoid(posterior / risk_scale)
-  weights:
-    spoof: 1.0
-    speaker: 0.6
-    prosody: 0.15
-    liveness: 0.8
+# Deterministic bands on an independent spoof probability.  No cross-branch
+# fusion: with one detector and one optional verifier, a combined score would
+# look rigorous without the evidence to justify it, and would hide which
+# branch fired.
+scoring:
+  amber_threshold: 0.50
+  red_threshold: 0.80
+  speaker_threshold: 0.25
+  smoothing_windows: 5       # 1 disables smoothing and reports the raw window
+  logit_scale: 2.0           # only used when no calibration exists
   calibration: configs/calibration.json

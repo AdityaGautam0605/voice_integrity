@@ -2,7 +2,13 @@
 
 Config is validated on load rather than on first use, so a malformed threshold
 or a window/crop mismatch fails at startup instead of producing quietly wrong
-numbers for three weeks.  See FR-CO-03.
+numbers for three weeks.
+
+Production-only capabilities are present as **flags defaulted off** rather than
+as absent code.  The default path is the simple one: one detector, deterministic
+thresholds, no key-management ceremony.  Turning a flag on enables something
+that is already written and tested, which is a very different proposition from
+building it under time pressure.
 """
 
 from __future__ import annotations
@@ -38,6 +44,13 @@ class AudioConfig(BaseModel):
 
 
 class FrontendConfig(BaseModel):
+    """Self-supervised front end.
+
+    `enabled: false` runs a raw-waveform detector instead, which is what the
+    edge tier uses and what a CPU-only demo machine may need.
+    """
+
+    enabled: bool = True
     model_id: str = "facebook/wav2vec2-xls-r-300m"
     hidden_dim: int = 1024
     frozen: bool = True
@@ -61,11 +74,19 @@ class SpeakerConfig(BaseModel):
 
 
 class ProsodyConfig(BaseModel):
-    enabled: bool = True
+    enabled: bool = False
 
 
 class LivenessConfig(BaseModel):
-    enabled: bool = True
+    """Conversational liveness.
+
+    Off by default: it needs both call directions and 10-20 turn transitions
+    before it says anything trustworthy, so it is a stretch capability rather
+    than part of the core demo path.  The implementation is complete and
+    tested - flip `enabled` when both streams are available.
+    """
+
+    enabled: bool = False
     min_utterance_ms: float = 250.0
     resume_window_ms: float = 700.0
     backchannel_max_ms: float = 900.0
@@ -73,18 +94,27 @@ class LivenessConfig(BaseModel):
     min_transitions: int = 4
 
 
-class FusionConfig(BaseModel):
-    llr_clamp: float = 4.0
-    risk_scale: float = 4.0
-    weights: dict[str, float] = Field(
-        default_factory=lambda: {
-            "spoof": 1.0,
-            "speaker": 0.6,
-            "prosody": 0.15,
-            "liveness": 0.8,
-        }
-    )
+class ScoringConfig(BaseModel):
+    """Deterministic thresholds on an independent spoof probability.
+
+    No cross-branch fusion: branches are reported side by side so it is always
+    visible which one fired.
+    """
+
+    amber_threshold: float = 0.50
+    red_threshold: float = 0.80
+    speaker_threshold: float = 0.25
+    smoothing_windows: int = 5
+    logit_scale: float = 2.0
     calibration: str = "configs/calibration.json"
+
+    @model_validator(mode="after")
+    def _check(self) -> ScoringConfig:
+        if not 0.0 < self.amber_threshold < self.red_threshold < 1.0:
+            raise ValueError("thresholds must satisfy 0 < amber < red < 1")
+        if self.smoothing_windows < 1:
+            raise ValueError("smoothing_windows must be at least 1")
+        return self
 
 
 class ModelConfig(BaseModel):
@@ -94,47 +124,46 @@ class ModelConfig(BaseModel):
     speaker: SpeakerConfig = Field(default_factory=SpeakerConfig)
     prosody: ProsodyConfig = Field(default_factory=ProsodyConfig)
     liveness: LivenessConfig = Field(default_factory=LivenessConfig)
-    fusion: FusionConfig = Field(default_factory=FusionConfig)
+    scoring: ScoringConfig = Field(default_factory=ScoringConfig)
 
 
-class TierConfig(BaseModel):
-    name: str
-    max_value: float | None = None
-    amber: float
-    red: float
+class ActionConfig(BaseModel):
+    """What each band does.  Gating an action, never ending a call."""
+
+    green: str = "PROCEED"
+    amber: str = "CHALLENGE"
+    red: str = "GATE_ACTION"
+
+    @model_validator(mode="after")
+    def _check(self) -> ActionConfig:
+        if "TERMINATE" in self.red.upper():
+            raise ValueError("the system gates the action, it never terminates the call")
+        return self
 
 
 class PolicyConfig(BaseModel):
     version: str = "policy-1.0.0"
-    bands: dict[str, list[float]] = Field(
-        default_factory=lambda: {
-            "green": [0.0, 40.0],
-            "amber": [40.0, 75.0],
-            "red": [75.0, 100.0],
-        }
-    )
-    tiers: list[TierConfig] = Field(default_factory=list)
-    actions: dict[str, str] = Field(
-        default_factory=lambda: {
-            "green": "proceed",
-            "amber": "challenge",
-            "red": "gate_action",
-        }
-    )
+    actions: ActionConfig = Field(default_factory=ActionConfig)
     fail_closed: bool = True
-    metadata_prior: dict[str, float] = Field(default_factory=dict)
+    challenge_on_amber: bool = True
+    identity_warning: bool = True
 
-    @model_validator(mode="after")
-    def _check(self) -> PolicyConfig:
-        for tier in self.tiers:
-            if tier.amber >= tier.red:
-                raise ValueError(f"tier {tier.name}: amber threshold must be below red")
-        open_ended = [i for i, t in enumerate(self.tiers) if t.max_value is None]
-        if self.tiers and (len(open_ended) != 1 or open_ended[0] != len(self.tiers) - 1):
-            raise ValueError("exactly one tier must have max_value null, and it must be last")
-        if self.actions.get("red") == "terminate_call":
-            raise ValueError("FR-PO-02: gate the action, never terminate the call")
-        return self
+
+class SecurityConfig(BaseModel):
+    """Demo-appropriate security.
+
+    Deferred to a production roadmap and defaulted off: KMS/HSM custody,
+    per-tenant unlinkable templates, Merkle checkpoints with external
+    anchoring, sender-constrained credentials, enclaves, homomorphic matching,
+    federated updates.
+    """
+
+    sign_verdicts: bool = True
+    api_token: str = ""  # empty disables auth; set VIF_API_TOKEN in deployment
+    audit_log: bool = True
+    merkle_checkpoints: bool = False
+    cancelable_templates: bool = False
+    encrypt_templates: bool = True
 
 
 class CodecSpec(BaseModel):
@@ -167,6 +196,7 @@ class AppConfig(BaseModel):
 
     model: ModelConfig = Field(default_factory=ModelConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
     augment: AugmentConfig = Field(default_factory=AugmentConfig)
     root: Path = Path(".")
 
@@ -187,16 +217,18 @@ def load_config(
     config_dir: str | Path = "configs",
     root: str | Path | None = None,
 ) -> AppConfig:
-    """Load model, policy and augment config from a directory.
+    """Load model, policy, security and augment config from a directory.
 
     Missing files fall back to the defaults declared above, so the tests and
     the synthetic smoke path work without any YAML present.
     """
     config_dir = Path(config_dir)
     root_path = Path(root) if root is not None else config_dir.parent
+    policy_blob = _read_yaml(config_dir / "policy.yaml")
     return AppConfig(
         model=ModelConfig(**_read_yaml(config_dir / "model.yaml")),
-        policy=PolicyConfig(**_read_yaml(config_dir / "policy.yaml")),
+        policy=PolicyConfig(**{k: v for k, v in policy_blob.items() if k != "security"}),
+        security=SecurityConfig(**policy_blob.get("security", {})),
         augment=AugmentConfig(**_read_yaml(config_dir / "augment.yaml")),
         root=root_path,
     )

@@ -22,6 +22,7 @@ import base64
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,11 +91,31 @@ def merkle_root(hashes: list[str]) -> str:
 class AuditLog:
     """Append-only, hash-chained store of signed verdicts."""
 
-    def __init__(self, db_path: str | Path, signer: SigningKeyPair | None = None):
+    def __init__(
+        self,
+        db_path: str | Path,
+        signer: SigningKeyPair | None = None,
+        merkle_checkpoints: bool = False,
+    ):
+        """`merkle_checkpoints` adds signed roots over the log.
+
+        Off by default.  The hash chain alone already detects any edit,
+        deletion or reordering, which is what a prototype needs to
+        demonstrate.  Signed roots make the log non-repudiable rather than
+        merely self-consistent, and matter once someone other than the
+        operator has to trust it.
+        """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.signer = signer
-        self._conn = sqlite3.connect(str(self.db_path))
+        self.merkle_checkpoints = merkle_checkpoints
+        # check_same_thread=False because an ASGI server dispatches
+        # handlers across a threadpool: the connection is opened at
+        # startup and used from whichever worker serves a request.  The
+        # lock is what actually makes that safe - SQLite itself is not
+        # reentrant for concurrent writes on one connection.
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
@@ -113,19 +134,21 @@ class AuditLog:
         entry_hash = _hash_entry(seq, prev_hash, payload_json)
         ts_ms = int(time.time() * 1000)
 
-        self._conn.execute(
-            "INSERT INTO entries VALUES (?,?,?,?,?)",
-            (seq, prev_hash, entry_hash, payload_json, ts_ms),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO entries VALUES (?,?,?,?,?)",
+                (seq, prev_hash, entry_hash, payload_json, ts_ms),
+            )
+            self._conn.commit()
         return LogEntry(
             seq=seq, prev_hash=prev_hash, entry_hash=entry_hash, payload=payload, ts_ms=ts_ms
         )
 
     def _tip(self) -> tuple[str, int]:
-        row = self._conn.execute(
-            "SELECT entry_hash, seq FROM entries ORDER BY seq DESC LIMIT 1"
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT entry_hash, seq FROM entries ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
         return (GENESIS_HASH, 0) if row is None else (row[0], row[1] + 1)
 
     @staticmethod
@@ -148,9 +171,10 @@ class AuditLog:
         hash - which is exactly why checkpoints are signed and, in production,
         anchored externally (SEC-14).
         """
-        rows = self._conn.execute(
-            "SELECT seq, prev_hash, entry_hash, payload FROM entries ORDER BY seq"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT seq, prev_hash, entry_hash, payload FROM entries ORDER BY seq"
+            ).fetchall()
         expected_prev = GENESIS_HASH
         for seq, prev_hash, entry_hash, payload_json in rows:
             if prev_hash != expected_prev:
@@ -165,11 +189,14 @@ class AuditLog:
 
     def checkpoint(self) -> dict | None:
         """Sign a Merkle root over everything written so far."""
+        if not self.merkle_checkpoints:
+            return None
         if self.signer is None:
             log.warning("no signing key configured - checkpoint skipped")
             return None
 
-        rows = self._conn.execute("SELECT entry_hash FROM entries ORDER BY seq").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT entry_hash FROM entries ORDER BY seq").fetchall()
         if not rows:
             return None
 
@@ -178,11 +205,12 @@ class AuditLog:
         seq = len(rows) - 1
         ts_ms = int(time.time() * 1000)
 
-        self._conn.execute(
-            "INSERT OR REPLACE INTO checkpoints VALUES (?,?,?,?,?)",
-            (seq, root, base64.b64encode(signature).decode(), self.signer.key_id, ts_ms),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO checkpoints VALUES (?,?,?,?,?)",
+                (seq, root, base64.b64encode(signature).decode(), self.signer.key_id, ts_ms),
+            )
+            self._conn.commit()
         log.info("checkpointed %d entries, root %s", len(rows), root[:16])
         return {
             "seq": seq,
@@ -193,16 +221,16 @@ class AuditLog:
         }
 
     def verify_checkpoint(self, public_key) -> tuple[bool, str]:
-        row = self._conn.execute(
-            "SELECT seq, merkle_root, signature FROM checkpoints ORDER BY seq DESC LIMIT 1"
-        ).fetchone()
-        if row is None:
-            return False, "no checkpoint recorded"
-
-        seq, root, signature = row
-        rows = self._conn.execute(
-            "SELECT entry_hash FROM entries WHERE seq <= ? ORDER BY seq", (seq,)
-        ).fetchall()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT seq, merkle_root, signature FROM checkpoints ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return False, "no checkpoint recorded"
+            seq, root, signature = row
+            rows = self._conn.execute(
+                "SELECT entry_hash FROM entries WHERE seq <= ? ORDER BY seq", (seq,)
+            ).fetchall()
         if merkle_root([r[0] for r in rows]) != root:
             return False, "entries no longer produce the checkpointed root"
 
@@ -215,11 +243,12 @@ class AuditLog:
     # -- read --------------------------------------------------------------
 
     def entries(self, limit: int = 100) -> list[LogEntry]:
-        rows = self._conn.execute(
-            "SELECT seq, prev_hash, entry_hash, payload, ts_ms FROM entries "
-            "ORDER BY seq DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT seq, prev_hash, entry_hash, payload, ts_ms FROM entries "
+                "ORDER BY seq DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
         return [
             LogEntry(
                 seq=r[0], prev_hash=r[1], entry_hash=r[2], payload=json.loads(r[3]), ts_ms=r[4]
@@ -228,4 +257,5 @@ class AuditLog:
         ]
 
     def count(self) -> int:
-        return int(self._conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0])
+        with self._lock:
+            return int(self._conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0])

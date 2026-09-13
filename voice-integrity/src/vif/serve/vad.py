@@ -46,6 +46,13 @@ class EnergyVAD(BaseVAD):
     Tracks a running noise floor and calls a frame speech when it sits far
     enough above it.  Crude next to a neural VAD, but deterministic, instant,
     and good enough to keep tests honest.
+
+    One real limitation: it calibrates the floor from the opening frames, so a
+    stream that begins mid-speech has its noise floor set to speech level and
+    nothing is ever detected.  Real calls open with a moment of silence, so
+    this rarely bites in practice - but a synthetic stream that starts loud
+    will look completely silent.  Silero has no such requirement; this is the
+    offline fallback and the trade-off is the price of having one.
     """
 
     def __init__(

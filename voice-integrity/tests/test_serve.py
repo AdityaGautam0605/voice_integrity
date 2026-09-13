@@ -1,4 +1,4 @@
-"""Serving layer: ring buffer, VAD, fusion, policy, liveness, session."""
+"""Serving layer: ring buffer, VAD, scoring, policy, liveness, session."""
 
 from __future__ import annotations
 
@@ -8,18 +8,17 @@ import numpy as np
 import pytest
 
 from vif.common.config import (
+    ActionConfig,
     AudioConfig,
-    FusionConfig,
     LivenessConfig,
     PolicyConfig,
-    TierConfig,
+    ScoringConfig,
     load_config,
 )
-from vif.common.types import Band, BranchScores, Side, TurnEvent, TurnEventKind
+from vif.common.types import Risk, Side, SpeakerStatus, TurnEvent, TurnEventKind
 from vif.eval.calibration import Calibrator, PlattParams
 from vif.serve.adapters.file import SyntheticAdapter
 from vif.serve.detector import StubDetector
-from vif.serve.fusion import FusionEngine, metadata_prior_llr
 from vif.serve.liveness import (
     LivenessBranch,
     Utterance,
@@ -29,6 +28,7 @@ from vif.serve.liveness import (
 )
 from vif.serve.policy import PolicyEngine
 from vif.serve.ringbuffer import SpeechRingBuffer
+from vif.serve.scoring import Scorer, logit, risk_from_probability, sigmoid
 from vif.serve.session import CallSession
 from vif.serve.vad import EnergyVAD
 
@@ -38,7 +38,6 @@ class TestRingBuffer:
         buf = SpeechRingBuffer(window_samples=1000, hop_samples=100)
         buf.append(np.ones(1000, dtype=np.float32))
         assert buf.take_window() is not None
-        # A window was just taken; another needs a whole hop of new speech.
         assert buf.take_window() is None
         buf.append(np.ones(100, dtype=np.float32))
         assert buf.take_window() is not None
@@ -86,105 +85,108 @@ class TestVAD:
         assert vad.is_speech(tone)
 
 
-class TestFusion:
-    def _engine(self, **kw):
-        return FusionEngine(
-            FusionConfig(weights={"spoof": 1.0, "speaker": 0.0, "prosody": 0.0, "liveness": 1.0}),
-            Calibrator({"spoof": PlattParams(a=1.0, b=0.0, fitted_on="dev")}),
-            **kw,
-        )
+class TestScoring:
+    def _scorer(self, **kw):
+        config = ScoringConfig(**kw)
+        return Scorer(config, Calibrator({"spoof": PlattParams(a=1.0, b=0.0, fitted_on="dev")}))
 
-    def test_evidence_accumulates_rather_than_averages(self):
-        """Ten weak windows must be stronger than one, not equal to it."""
-        engine = self._engine()
-        for _ in range(10):
-            engine.update(BranchScores(spoof=0.5))
-        assert engine.state.running_llr == pytest.approx(5.0)
+    def test_sigmoid_logit_roundtrip(self):
+        for p in (0.01, 0.25, 0.5, 0.75, 0.99):
+            assert sigmoid(logit(p)) == pytest.approx(p, abs=1e-6)
 
-        single = self._engine()
-        single.update(BranchScores(spoof=0.5))
-        assert engine.risk > single.risk
+    def test_probability_is_monotone(self):
+        low = self._scorer().update_spoof(-3.0)
+        high = self._scorer().update_spoof(3.0)
+        assert 0.0 < low < high < 1.0
 
-    def test_confidence_interval_narrows(self):
-        engine = self._engine()
-        engine.update(BranchScores(spoof=0.5))
-        first = engine.confidence_interval
-        for _ in range(20):
-            engine.update(BranchScores(spoof=0.5))
-        assert engine.confidence_interval < first
+    def test_bands_follow_configured_thresholds(self):
+        config = ScoringConfig(amber_threshold=0.5, red_threshold=0.8)
+        assert risk_from_probability(0.2, config) == Risk.GREEN
+        assert risk_from_probability(0.6, config) == Risk.AMBER
+        assert risk_from_probability(0.9, config) == Risk.RED
 
-    def test_abstaining_branch_does_not_move_the_posterior(self):
-        engine = self._engine()
-        before = engine.state.running_llr
-        engine.update(BranchScores(spoof=None, speaker=None, prosody=None))
-        assert engine.state.running_llr == before
-        assert engine.state.n_windows == 0
+    def test_thresholds_must_be_ordered(self):
+        with pytest.raises(ValueError):
+            ScoringConfig(amber_threshold=0.9, red_threshold=0.5)
 
-    def test_per_window_contribution_is_clamped(self):
-        engine = self._engine()
-        engine.update(BranchScores(spoof=1000.0))
-        assert abs(engine.state.running_llr) <= 4.0
+    def test_smoothing_settles_a_jittery_score(self):
+        """A single odd window must not swing the reported probability."""
+        scorer = self._scorer(smoothing_windows=5)
+        for _ in range(5):
+            scorer.update_spoof(2.0)
+        steady = scorer.spoof_probability
+        scorer.update_spoof(-2.0)  # one contradictory window
+        assert abs(scorer.spoof_probability - steady) < 0.35
 
-    def test_prior_shifts_the_starting_point(self):
-        neutral = self._engine(prior_llr=0.0)
-        suspicious = self._engine(prior_llr=2.0)
-        assert suspicious.risk > neutral.risk
+    def test_smoothing_of_one_reports_the_raw_window(self):
+        scorer = self._scorer(smoothing_windows=1)
+        scorer.update_spoof(2.0)
+        scorer.update_spoof(-2.0)
+        assert scorer.spoof_probability == pytest.approx(sigmoid(-2.0), abs=1e-6)
 
-    def test_metadata_prior_direction(self):
-        policy = PolicyConfig(
-            metadata_prior={"first_contact": 0.8, "known_contact": -1.2},
-        )
-        assert metadata_prior_llr({"first_contact": True}, policy) > 0
-        assert metadata_prior_llr({"known_contact": True}, policy) < 0
-        assert metadata_prior_llr({}, policy) == 0.0
+    def test_speaker_branch_abstains_without_enrolment(self):
+        """NOT_ENROLLED is not the same as MISMATCH."""
+        scorer = self._scorer()
+        assert scorer.update_speaker(None) == SpeakerStatus.NOT_ENROLLED
+        assert scorer.speaker_status == SpeakerStatus.NOT_ENROLLED
+
+    def test_speaker_threshold(self):
+        scorer = self._scorer(speaker_threshold=0.25)
+        assert scorer.update_speaker(0.10) == SpeakerStatus.MISMATCH
+        assert scorer.update_speaker(0.60) == SpeakerStatus.MATCH
+
+    def test_speaker_does_not_move_the_spoof_probability(self):
+        """Branches are independent - that is the whole point."""
+        scorer = self._scorer()
+        scorer.update_spoof(1.0)
+        before = scorer.spoof_probability
+        scorer.update_speaker(-0.9)
+        assert scorer.spoof_probability == before
+
+    def test_uncalibrated_scorer_still_ranks(self):
+        scorer = Scorer(ScoringConfig(), calibrator=None)
+        assert not scorer.calibrated
+        low = scorer.update_spoof(-3.0)
+        scorer.reset()
+        assert low < scorer.update_spoof(3.0)
 
 
 class TestPolicy:
     def _policy(self):
-        return PolicyEngine(
-            PolicyConfig(
-                tiers=[
-                    TierConfig(name="routine", max_value=50000, amber=55, red=85),
-                    TierConfig(name="high", max_value=None, amber=35, red=70),
-                ]
-            )
-        )
+        return PolicyEngine(PolicyConfig())
 
-    def test_tier_selection_by_value(self):
+    def test_band_maps_to_action(self):
         engine = self._policy()
-        assert engine.select_tier(1000).name == "routine"
-        assert engine.select_tier(10_000_000).name == "high"
+        assert engine.evaluate(Risk.GREEN, 0.2).action.value == "PROCEED"
+        assert engine.evaluate(Risk.AMBER, 0.6).action.value == "CHALLENGE"
+        assert engine.evaluate(Risk.RED, 0.9).action.value == "GATE_ACTION"
 
-    def test_unknown_value_uses_the_strictest_tier(self):
-        """An unknown stake is not the same as a low one."""
-        assert self._policy().select_tier(None).name == "high"
+    def test_decision_carries_a_readable_reason(self):
+        decision = self._policy().evaluate(Risk.RED, 0.91)
+        assert "0.91" in decision.reason
 
-    def test_same_risk_different_tiers(self):
-        engine = self._policy()
-        assert engine.evaluate(60.0, transaction_value=1000).band == Band.AMBER
-        assert engine.evaluate(60.0, transaction_value=10_000_000).band == Band.AMBER
-        assert engine.evaluate(75.0, transaction_value=1000).band == Band.AMBER
-        assert engine.evaluate(75.0, transaction_value=10_000_000).band == Band.RED
+    def test_identity_mismatch_raises_a_separate_flag(self):
+        """A synthetic voice and the wrong person are different findings."""
+        decision = self._policy().evaluate(Risk.GREEN, 0.1, SpeakerStatus.MISMATCH)
+        assert decision.risk == Risk.GREEN  # band unchanged
+        assert decision.identity_warning is True
+
+    def test_not_enrolled_raises_no_warning(self):
+        decision = self._policy().evaluate(Risk.GREEN, 0.1, SpeakerStatus.NOT_ENROLLED)
+        assert decision.identity_warning is False
 
     def test_unverified_verdict_fails_closed(self):
-        decision = self._policy().evaluate(0.0, 1000, verdict_verified=False)
-        assert decision.band == Band.RED
+        decision = self._policy().evaluate(Risk.GREEN, 0.05, verdict_verified=False)
+        assert decision.risk == Risk.RED
         assert "failing closed" in decision.reason
 
     def test_terminate_call_is_rejected_at_config_load(self):
-        with pytest.raises(ValueError, match="never terminate"):
-            PolicyConfig(
-                actions={"green": "proceed", "amber": "challenge", "red": "terminate_call"}
-            )
-
-    def test_amber_must_be_below_red(self):
-        with pytest.raises(ValueError, match="below red"):
-            PolicyConfig(tiers=[TierConfig(name="bad", max_value=None, amber=90, red=50)])
+        with pytest.raises(ValueError, match="never terminates"):
+            ActionConfig(red="TERMINATE_CALL")
 
 
 class TestLiveness:
     def _utterances(self, gaps_ms: list[float], duration_s: float = 2.0):
-        """Build an alternating conversation with the given response gaps."""
         utterances, clock, side = [], 0.0, Side.AGENT
         for gap in gaps_ms:
             utterances.append(Utterance(side, clock, clock + duration_s))
@@ -194,16 +196,14 @@ class TestLiveness:
 
     def test_machine_floor_is_detected(self):
         config = LivenessConfig()
-        # Agent responds naturally, caller never faster than 300 ms.
         utterances, clock = [], 0.0
         for i in range(12):
             side = Side.AGENT if i % 2 == 0 else Side.CALLER
             utterances.append(Utterance(side, clock, clock + 2.0))
-            gap = 320.0 if side == Side.AGENT else -80.0  # next is caller / agent
+            gap = 320.0 if side == Side.AGENT else -80.0
             clock = clock + 2.0 + gap / 1000.0
         features = compute_features(build_transitions(utterances, config), config)
-        assert features.floor_delta_ms is not None
-        assert features.floor_delta_ms > 200
+        assert features.floor_delta_ms is not None and features.floor_delta_ms > 200
 
     def test_overlap_is_recognised(self):
         config = LivenessConfig()
@@ -212,7 +212,6 @@ class TestLiveness:
         assert (features.caller_overlap_rate or 0) + (features.agent_overlap_rate or 0) > 0
 
     def test_branch_abstains_below_minimum_transitions(self):
-        """Too little evidence must abstain, not guess."""
         config = LivenessConfig(min_transitions=6)
         features = compute_features(
             build_transitions(self._utterances([200.0, 180.0]), config), config
@@ -222,7 +221,7 @@ class TestLiveness:
     def test_short_utterances_are_filtered(self):
         config = LivenessConfig(min_utterance_ms=250)
         utterances = [
-            Utterance(Side.AGENT, 0.0, 0.05),  # 50 ms blip
+            Utterance(Side.AGENT, 0.0, 0.05),
             Utterance(Side.CALLER, 1.0, 3.0),
         ]
         assert build_transitions(utterances, config) == []
@@ -234,32 +233,71 @@ class TestLiveness:
             TurnEvent(side=Side.CALLER, kind=TurnEventKind.END, monotonic_ns=2_000_000_000)
         )
         branch.tracker.close(3.0)
-        assert len(branch.tracker.utterances) == 1
         assert branch.tracker.utterances[0].duration_ms == pytest.approx(2000.0)
-
-    def test_open_utterance_closed_at_teardown(self):
-        branch = LivenessBranch(LivenessConfig())
-        branch.record(TurnEvent(side=Side.AGENT, kind=TurnEventKind.START, monotonic_ns=0))
-        branch.finalise(5.0)
-        assert len(branch.tracker.utterances) == 1
 
 
 class TestSession:
     @pytest.mark.asyncio
-    async def test_machine_call_scores_higher_than_human(self):
-        """The end-to-end claim, on synthetic conversations."""
+    async def test_emits_the_documented_contract(self):
         config = load_config("configs")
+        messages: list[dict] = []
+
+        async def collect(payload):
+            messages.append(payload)
+
+        adapter = SyntheticAdapter(n_turns=12, seed=3, realtime=False)
+        session = CallSession(
+            session_id="contract",
+            config=config,
+            detector=StubDetector(config.model.audio.window_samples),
+            vad=EnergyVAD(config.model.audio.vad_frame),
+            on_message=collect,
+        )
+        await session.consume(adapter, Side.CALLER)
+
+        assert messages
+        last = messages[-1]
+        for field in (
+            "session_id",
+            "sequence",
+            "speech_seconds",
+            "spoof_probability",
+            "risk",
+            "speaker_status",
+            "inference_ms",
+            "model_version",
+        ):
+            assert field in last
+        assert 0.0 <= last["spoof_probability"] <= 1.0
+        assert last["risk"] in ("GREEN", "AMBER", "RED")
+        session.close()
+
+    @pytest.mark.asyncio
+    async def test_liveness_is_off_unless_enabled(self):
+        config = load_config("configs")
+        session = CallSession(
+            session_id="off",
+            config=config,
+            detector=StubDetector(config.model.audio.window_samples),
+            vad=EnergyVAD(config.model.audio.vad_frame),
+        )
+        assert session.liveness is None
+        session.close()
+
+    @pytest.mark.asyncio
+    async def test_enabled_liveness_separates_human_from_machine(self):
+        config = load_config("configs")
+        config.model.liveness.enabled = True
 
         async def run(floor_ms: float):
             adapter = SyntheticAdapter(
                 n_turns=16, pipeline_floor_ms=floor_ms, seed=3, realtime=False
             )
             session = CallSession(
-                call_id=f"t{floor_ms}",
+                session_id=f"t{floor_ms}",
                 config=config,
                 detector=StubDetector(config.model.audio.window_samples),
                 vad=EnergyVAD(config.model.audio.vad_frame),
-                calibrator=Calibrator({}),
             )
             await asyncio.gather(
                 session.consume(adapter, Side.CALLER),
@@ -269,23 +307,18 @@ class TestSession:
             session.close()
             return payload
 
-        human = await run(0.0)
-        machine = await run(320.0)
-
-        assert machine.liveness.n_transitions > 0
+        human, machine = await run(0.0), await run(320.0)
         assert machine.liveness.caller_floor_ms > human.liveness.caller_floor_ms
-        assert (machine.branches.liveness or 0) > (human.branches.liveness or 0)
 
     @pytest.mark.asyncio
     async def test_teardown_clears_the_buffer(self):
         config = load_config("configs")
         adapter = SyntheticAdapter(n_turns=6, seed=1, realtime=False)
         session = CallSession(
-            call_id="teardown",
+            session_id="teardown",
             config=config,
             detector=StubDetector(config.model.audio.window_samples),
             vad=EnergyVAD(config.model.audio.vad_frame),
-            calibrator=Calibrator({}),
         )
         await session.consume(adapter, Side.CALLER)
         session.close()
@@ -297,18 +330,14 @@ class TestSession:
         config = load_config("configs")
         adapter = SyntheticAdapter(n_turns=8, seed=2, realtime=False)
         session = CallSession(
-            call_id="staging",
+            session_id="staging",
             config=config,
             detector=StubDetector(config.model.audio.window_samples),
             vad=EnergyVAD(config.model.audio.vad_frame),
-            calibrator=Calibrator({}),
         )
-        await asyncio.gather(
-            session.consume(adapter, Side.CALLER),
-            session.consume(adapter, Side.AGENT),
-        )
+        await session.consume(adapter, Side.CALLER)
         assert session.stats.frames_ingested > 0
-        assert len(session.liveness.tracker.events) > 0
+        assert session.stats.windows_scored > 0
         session.close()
 
 

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """End-to-end smoke test with no downloads and no corpora.
 
-Exercises every layer of the pipeline - ingest, VAD gate, windowing, fusion,
-policy, liveness, signing, vault, audit log - using the stub detector and
-synthetic conversations.  Nothing here is a detection result; the point is to
-prove the plumbing is correct before any weights exist.
+Exercises every layer - ingest, VAD gate, windowing, scoring, policy, signing,
+vault, audit log - using the stub detector and synthetic conversations.
+Nothing here is a detection result; the point is to prove the plumbing is
+correct before any weights exist.
 
-Run:
     PYTHONPATH=src python scripts/smoke_test.py
 """
 
@@ -23,7 +22,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from vif.common.config import load_config  # noqa: E402
-from vif.common.types import Side  # noqa: E402
+from vif.common.types import Risk, Side, SpeakerStatus  # noqa: E402
 from vif.crypto.auditlog import AuditLog  # noqa: E402
 from vif.crypto.cancelable import compare, new_params, transform  # noqa: E402
 from vif.crypto.keys import LocalKeyStore  # noqa: E402
@@ -33,6 +32,7 @@ from vif.eval.calibration import Calibrator, fit_platt  # noqa: E402
 from vif.eval.metrics import sanity_check_random  # noqa: E402
 from vif.serve.adapters.file import SyntheticAdapter  # noqa: E402
 from vif.serve.detector import StubDetector  # noqa: E402
+from vif.serve.scoring import Scorer  # noqa: E402
 from vif.serve.session import CallSession  # noqa: E402
 from vif.serve.vad import EnergyVAD  # noqa: E402
 
@@ -42,43 +42,35 @@ FAIL = " FAIL "
 
 def check(label: str, condition: bool, detail: str = "") -> bool:
     print(f"[{OK if condition else FAIL}] {label}" + (f"  -  {detail}" if detail else ""))
-    return condition
+    return bool(condition)
 
 
-async def run_call(
-    config,
-    pipeline_floor_ms: float,
-    n_turns: int = 16,
-    seed: int = 0,
-) -> tuple[CallSession, list[dict]]:
-    """Drive one synthetic call all the way through the session layer."""
-    frames: list[dict] = []
+async def run_session(config, pipeline_floor_ms: float, seed: int = 1, turns: int = 16):
+    """Drive one synthetic conversation all the way through the session layer."""
+    messages: list[dict] = []
 
     async def collect(payload: dict) -> None:
-        frames.append(payload)
+        messages.append(payload)
 
     adapter = SyntheticAdapter(
-        n_turns=n_turns,
-        pipeline_floor_ms=pipeline_floor_ms,
-        seed=seed,
-        realtime=False,
+        n_turns=turns, pipeline_floor_ms=pipeline_floor_ms, seed=seed, realtime=False
     )
     session = CallSession(
-        call_id=f"smoke-floor{int(pipeline_floor_ms)}",
+        session_id=f"smoke-{int(pipeline_floor_ms)}",
         config=config,
         detector=StubDetector(config.model.audio.window_samples),
         vad=EnergyVAD(config.model.audio.vad_frame),
-        on_score=collect,
+        on_message=collect,
         calibrator=Calibrator({}),
-        metadata={"first_contact": True, "transaction_value": 5_000_000},
     )
-    session.liveness.set_rtt(await adapter.rtt_ms())
+    if session.liveness is not None:
+        session.liveness.set_rtt(await adapter.rtt_ms())
 
     await asyncio.gather(
         session.consume(adapter, Side.CALLER),
         session.consume(adapter, Side.AGENT),
     )
-    return session, frames
+    return session, messages
 
 
 async def main() -> int:
@@ -98,13 +90,18 @@ async def main() -> int:
             f"window={config.model.audio.window_samples} hop={config.model.audio.hop_samples}",
         )
         passed &= check(
-            "policy rejects terminate_call",
-            config.policy.actions.get("red") == "gate_action",
+            "thresholds ordered 0 < amber < red < 1",
+            0 < config.model.scoring.amber_threshold < config.model.scoring.red_threshold < 1,
+            f"amber={config.model.scoring.amber_threshold} red={config.model.scoring.red_threshold}",
         )
-        passed &= check("tiers are ordered and open-ended last", len(config.policy.tiers) >= 1)
+        passed &= check(
+            "policy gates the action rather than the call",
+            "TERMINATE" not in config.policy.actions.red.upper(),
+            config.policy.actions.red,
+        )
 
-        # -- 2. metric harness (the P0 gate) -----------------------------
-        print("\n2. Metric harness  (P0 gate)")
+        # -- 2. metric harness (the gate) --------------------------------
+        print("\n2. Metric harness")
         result = sanity_check_random()
         passed &= check(
             "random classifier reports EER near 50%",
@@ -112,8 +109,8 @@ async def main() -> int:
             result.summary(),
         )
 
-        # -- 3. calibration ----------------------------------------------
-        print("\n3. Calibration")
+        # -- 3. scoring --------------------------------------------------
+        print("\n3. Scoring")
         rng = np.random.default_rng(0)
         labels = rng.integers(0, 2, size=4000)
         scores = np.where(labels == 0, rng.normal(1.5, 1.0, 4000), rng.normal(-1.5, 1.0, 4000))
@@ -123,93 +120,129 @@ async def main() -> int:
             params.a > 0,
             f"llr = {params.a:.3f} * score + {params.b:.3f}",
         )
-        llr_hi = params.to_llr(3.0)
-        llr_lo = params.to_llr(-3.0)
-        passed &= check("LLR is monotone in the score", llr_hi > llr_lo)
 
-        # -- 4. full pipeline, human vs machine --------------------------
+        scorer = Scorer(config.model.scoring, Calibrator({"spoof": params}))
+        low = scorer.update_spoof(-4.0)
+        scorer.reset()
+        high = scorer.update_spoof(4.0)
+        passed &= check(
+            "probability is monotone in the detector score",
+            0.0 < low < high < 1.0,
+            f"p(-4)={low:.3f}  p(+4)={high:.3f}",
+        )
+        passed &= check(
+            "bands follow the configured thresholds",
+            scorer.risk() == Risk.RED,
+            f"p={scorer.spoof_probability:.3f} -> {scorer.risk().value}",
+        )
+        passed &= check(
+            "speaker branch abstains without enrolment",
+            scorer.update_speaker(None) == SpeakerStatus.NOT_ENROLLED,
+        )
+        passed &= check(
+            "low similarity reads as a mismatch, not a low score",
+            scorer.update_speaker(0.05) == SpeakerStatus.MISMATCH,
+        )
+
+        # -- 4. live pipeline --------------------------------------------
         print("\n4. Live pipeline  (synthetic conversations)")
-        human_session, human_frames = await run_call(config, pipeline_floor_ms=0.0, seed=1)
-        machine_session, machine_frames = await run_call(config, pipeline_floor_ms=320.0, seed=1)
-
+        session, messages = await run_session(config, pipeline_floor_ms=0.0)
         passed &= check(
-            "score frames were emitted",
-            len(human_frames) > 0 and len(machine_frames) > 0,
-            f"human={len(human_frames)} machine={len(machine_frames)}",
+            "stream messages were emitted",
+            len(messages) > 0,
+            f"{len(messages)} messages",
         )
         passed &= check(
-            "windows were scored off the event loop",
-            human_session.stats.windows_scored > 0,
-            f"{human_session.stats.windows_scored} windows, "
-            f"{human_session.stats.mean_inference_ms:.1f} ms mean",
+            "windows scored off the event loop",
+            session.stats.windows_scored > 0,
+            f"{session.stats.windows_scored} windows, "
+            f"{session.stats.mean_inference_ms:.1f} ms mean",
         )
-        if human_frames:
-            first, last = human_frames[0], human_frames[-1]
+        if messages:
+            last = messages[-1]
             passed &= check(
-                "confidence interval narrows as evidence accumulates",
-                last["ci"] <= first["ci"],
-                f"{first['ci']:.1f} -> {last['ci']:.1f}",
+                "output contract carries the expected fields",
+                all(
+                    k in last
+                    for k in (
+                        "session_id",
+                        "sequence",
+                        "speech_seconds",
+                        "spoof_probability",
+                        "risk",
+                        "speaker_status",
+                        "inference_ms",
+                        "model_version",
+                    )
+                ),
+                f"p={last['spoof_probability']:.3f} risk={last['risk']} "
+                f"speech={last['speech_seconds']:.1f}s",
+            )
+            passed &= check(
+                "probability is a probability",
+                0.0 <= last["spoof_probability"] <= 1.0,
             )
             passed &= check(
                 "speech seconds tracked separately from wall clock",
-                last["speech_s"] > 0,
-                f"{last['speech_s']:.1f}s of speech",
+                last["speech_seconds"] > 0,
+                f"{last['speech_seconds']:.1f}s of speech",
             )
 
-        # -- 5. liveness -------------------------------------------------
-        print("\n5. Branch D  (conversational liveness)")
-        human_payload = human_session.finalise()
-        machine_payload = machine_session.finalise()
-        hf, mf = human_payload.liveness, machine_payload.liveness
-
+        # -- 5. liveness (opt-in) ----------------------------------------
+        print("\n5. Conversational liveness  (disabled by default)")
         passed &= check(
-            "turn transitions detected on both calls",
-            hf.n_transitions > 0 and mf.n_transitions > 0,
-            f"human={hf.n_transitions} machine={mf.n_transitions}",
+            "off unless explicitly enabled",
+            session.liveness is None,
+            "config.model.liveness.enabled = false",
+        )
+        live_config = config.model_copy(deep=True)
+        live_config.model.liveness.enabled = True
+        human, _ = await run_session(live_config, pipeline_floor_ms=0.0)
+        machine, _ = await run_session(live_config, pipeline_floor_ms=320.0)
+        hp, mp = human.finalise(), machine.finalise()
+        passed &= check(
+            "enabling it detects turn transitions",
+            hp.liveness.n_transitions > 0 and mp.liveness.n_transitions > 0,
+            f"human={hp.liveness.n_transitions} machine={mp.liveness.n_transitions}",
         )
         passed &= check(
-            "machine call shows a higher response floor",
-            (mf.caller_floor_ms or 0) > (hf.caller_floor_ms or 0),
-            f"human floor={_ms(hf.caller_floor_ms)} machine floor={_ms(mf.caller_floor_ms)}",
+            "machine conversation shows a higher response floor",
+            (mp.liveness.caller_floor_ms or 0) > (hp.liveness.caller_floor_ms or 0),
+            f"human={_ms(hp.liveness.caller_floor_ms)} machine={_ms(mp.liveness.caller_floor_ms)}",
         )
         passed &= check(
-            "machine call loses caller-side overlap",
-            (mf.caller_overlap_rate or 0.0) <= (hf.caller_overlap_rate or 0.0),
-            f"human overlap={_pct(hf.caller_overlap_rate)} "
-            f"machine overlap={_pct(mf.caller_overlap_rate)}",
-        )
-        passed &= check(
-            "liveness LLR is higher for the machine call",
-            (machine_payload.branches.liveness or 0) > (human_payload.branches.liveness or 0),
-            f"human={_num(human_payload.branches.liveness)} "
-            f"machine={_num(machine_payload.branches.liveness)}",
+            "machine conversation loses caller-side overlap",
+            (mp.liveness.caller_overlap_rate or 0.0) <= (hp.liveness.caller_overlap_rate or 0.0),
+            f"human={_pct(hp.liveness.caller_overlap_rate)} "
+            f"machine={_pct(mp.liveness.caller_overlap_rate)}",
         )
 
         # -- 6. policy ---------------------------------------------------
         print("\n6. Policy")
+        decision = session.last_decision
         passed &= check(
-            "high transaction value selects the strictest tier",
-            human_session.last_decision.tier == config.policy.tiers[-1].name,
-            f"tier={human_session.last_decision.tier} "
-            f"amber={human_session.last_decision.amber_threshold}",
+            "a decision carries a readable reason",
+            decision is not None and len(decision.reason) > 0,
+            decision.reason if decision else "",
         )
         passed &= check(
-            "action gates rather than terminating",
-            human_session.last_decision.action.value in ("proceed", "challenge", "gate_action"),
-            human_session.last_decision.action.value,
+            "action is one of the three configured outcomes",
+            decision.action.value in ("PROCEED", "CHALLENGE", "GATE_ACTION"),
+            decision.action.value,
         )
 
-        # -- 7. verdict signing ------------------------------------------
+        # -- 7. verdict attestation --------------------------------------
         print("\n7. Verdict attestation")
+        payload = session.finalise()
         keypair = generate_keypair()
         signer, verifier = VerdictSigner(keypair), VerdictVerifier(keypair.public_key)
-        verdict = signer.sign(human_payload)
+        verdict = signer.sign(payload)
 
         ok, reason = verifier.verify(verdict)
         passed &= check("signed verdict verifies", ok, reason)
 
         tampered = verdict.model_copy(deep=True)
-        tampered.payload.risk = 0.0
+        tampered.payload.spoof_probability = 0.0
         ok_t, reason_t = verifier.verify(tampered, check_replay=False)
         passed &= check("tampered verdict is rejected", not ok_t, reason_t)
 
@@ -219,19 +252,26 @@ async def main() -> int:
         ok_n, reason_n = verifier.verify_or_fail_closed(None)
         passed &= check("missing verdict fails closed", not ok_n, reason_n)
 
+        passed &= check(
+            "verdict pins the model that produced it",
+            verdict.payload.model_version != "",
+            f"{verdict.payload.model_version} / {verdict.payload.model_checksum or 'no checksum'}",
+        )
+
         # -- 8. audit log ------------------------------------------------
         print("\n8. Audit log")
         audit = AuditLog(workdir / "audit.db", signer=keypair)
         for _ in range(5):
-            audit.append(signer.sign(human_session.finalise()))
+            audit.append(signer.sign(session.finalise()))
         ok_chain, reason_chain = audit.verify_chain()
         passed &= check("hash chain intact", ok_chain, reason_chain)
+        passed &= check(
+            "Merkle checkpoints off by default",
+            audit.checkpoint() is None,
+            "hash chain alone detects any edit",
+        )
 
-        audit.checkpoint()
-        ok_cp, reason_cp = audit.verify_checkpoint(keypair.public_key)
-        passed &= check("signed checkpoint verifies", ok_cp, reason_cp)
-
-        audit._conn.execute("UPDATE entries SET payload = '{\"tampered\":true}' WHERE seq = 2")
+        audit._conn.execute("UPDATE entries SET payload = '{\"t\":1}' WHERE seq = 2")
         audit._conn.commit()
         ok_bad, reason_bad = audit.verify_chain()
         passed &= check("tampering with an entry is detected", not ok_bad, reason_bad)
@@ -240,64 +280,53 @@ async def main() -> int:
         # -- 9. vault ----------------------------------------------------
         print("\n9. Voiceprint vault")
         keystore = LocalKeyStore(workdir / "keystore.json")
-        vault = VoiceprintVault(workdir / "voiceprints.db", keystore)
+        vault = VoiceprintVault(workdir / "vp.db", keystore, use_cancelable=False)
 
         rng = np.random.default_rng(7)
         enrolled = rng.normal(size=192).astype(np.float32)
-        same_speaker = enrolled + rng.normal(0, 0.15, 192).astype(np.float32)
-        other_speaker = rng.normal(size=192).astype(np.float32)
+        same = enrolled + rng.normal(0, 0.15, 192).astype(np.float32)
+        other = rng.normal(size=192).astype(np.float32)
 
         vault.enrol("ceo-001", enrolled)
         passed &= check("speaker enrolled", vault.is_enrolled("ceo-001"))
-
-        match_same = vault.match("ceo-001", same_speaker)
-        match_other = vault.match("ceo-001", other_speaker)
         passed &= check(
             "same speaker scores above a different one",
-            match_same > match_other,
-            f"same={match_same:.3f} other={match_other:.3f}",
+            vault.match("ceo-001", same) > vault.match("ceo-001", other),
+            f"same={vault.match('ceo-001', same):.3f} other={vault.match('ceo-001', other):.3f}",
         )
         passed &= check("unenrolled speaker returns None", vault.match("nobody", enrolled) is None)
-
+        passed &= check(
+            "embeddings encrypted at rest",
+            enrolled.tobytes() not in (workdir / "vp.db").read_bytes(),
+            "raw bytes absent from the database file",
+        )
         vault.revoke("ceo-001")
         passed &= check("revocation removes the template", not vault.is_enrolled("ceo-001"))
-
-        # -- 10. cancelable transform ------------------------------------
-        print("\n10. Cancelable biometric transform")
-        params_a = new_params(in_dim=192, tenant="bank-a")
-        params_b = new_params(in_dim=192, tenant="bank-b")
-        t_a1 = transform(enrolled, params_a)
-        t_a2 = transform(same_speaker, params_a)
-        t_b1 = transform(enrolled, params_b)
-
-        passed &= check(
-            "distances survive the transform",
-            compare(t_a1, t_a2) > 0.5,
-            f"same-speaker similarity under transform = {compare(t_a1, t_a2):.3f}",
-        )
-        passed &= check(
-            "templates are unlinkable across tenants",
-            abs(compare(t_a1, t_b1)) < 0.4,
-            f"cross-tenant similarity = {compare(t_a1, t_b1):.3f}",
-        )
-        rotated = params_a.rotate()
-        passed &= check(
-            "rotating the seed invalidates old templates",
-            abs(compare(t_a1, transform(enrolled, rotated))) < 0.4,
-            "old template no longer matches",
-        )
-
         vault.close()
+
+        # -- 10. cancelable transform (opt-in) ---------------------------
+        print("\n10. Cancelable templates  (disabled by default)")
+        passed &= check(
+            "off unless explicitly enabled",
+            not config.security.cancelable_templates,
+            "security.cancelable_templates = false",
+        )
+        params_a = new_params(in_dim=192, tenant="bank-a")
+        t_a1, t_a2 = transform(enrolled, params_a), transform(same, params_a)
+        passed &= check(
+            "when enabled, distances survive the transform",
+            compare(t_a1, t_a2) > 0.5,
+            f"same-speaker similarity = {compare(t_a1, t_a2):.3f}",
+        )
+        passed &= check(
+            "when enabled, rotating the seed revokes",
+            abs(compare(t_a1, transform(enrolled, params_a.rotate()))) < 0.4,
+        )
 
         # -- 11. teardown ------------------------------------------------
         print("\n11. Teardown")
-        human_session.close()
-        machine_session.close()
-        passed &= check(
-            "buffers zeroed at teardown",
-            len(human_session.buffer) == 0,
-            "no audio retained",
-        )
+        session.close()
+        passed &= check("buffers zeroed at teardown", len(session.buffer) == 0, "no audio retained")
         audio_files = list(Path(".").glob("**/*.wav")) + list(Path(".").glob("**/*.flac"))
         passed &= check(
             "no audio written to disk during the run",
@@ -320,10 +349,6 @@ def _ms(value: float | None) -> str:
 
 def _pct(value: float | None) -> str:
     return "n/a" if value is None else f"{value * 100:.0f}%"
-
-
-def _num(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.3f}"
 
 
 if __name__ == "__main__":

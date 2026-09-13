@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from vif.common.types import Action, Band, BranchScores, LivenessFeatures, VerdictPayload
+from vif.common.types import Action, Risk, SpeakerStatus, VerdictPayload
 from vif.crypto.auditlog import AuditLog, merkle_root
 from vif.crypto.cancelable import compare, new_params, transform
 from vif.crypto.keys import LocalKeyStore
@@ -24,18 +24,19 @@ from vif.crypto.verdict import (
 )
 
 
-def make_payload(call_id: str = "call-1", risk: float = 82.0) -> VerdictPayload:
+def make_payload(session_id: str = "s-1", probability: float = 0.87) -> VerdictPayload:
     return VerdictPayload(
-        call_id=call_id,
-        risk=risk,
-        band=Band.RED,
-        branches=BranchScores(spoof=2.1, liveness=1.4),
-        liveness=LivenessFeatures(n_transitions=12, floor_delta_ms=310.0),
-        speech_s=18.5,
-        n_windows=15,
-        model_version="aasist-codec_robust-e12",
-        policy_version="policy-1.0.0",
+        session_id=session_id,
+        spoof_probability=probability,
+        risk=Risk.RED,
+        speaker_status=SpeakerStatus.MISMATCH,
+        speaker_similarity=0.11,
         action=Action.GATE_ACTION,
+        speech_seconds=18.5,
+        windows_scored=15,
+        model_version="aasist-codec_robust-e12",
+        model_checksum="a1b2c3d4e5f6",
+        policy_version="policy-1.0.0",
     )
 
 
@@ -50,18 +51,18 @@ class TestVerdict:
         verdict = VerdictSigner(generate_keypair()).sign(make_payload())
         assert len(verdict.payload.nonce) == 32
 
-    def test_tampering_with_risk_is_detected(self):
+    def test_tampering_with_the_probability_is_detected(self):
         """The attack this defends against: flip the score, keep everything else."""
         pair = generate_keypair()
-        verdict = VerdictSigner(pair).sign(make_payload(risk=95.0))
-        verdict.payload.risk = 1.0
+        verdict = VerdictSigner(pair).sign(make_payload(probability=0.95))
+        verdict.payload.spoof_probability = 0.0
         ok, reason = VerdictVerifier(pair.public_key).verify(verdict, check_replay=False)
         assert not ok and "does not verify" in reason
 
-    def test_tampering_with_band_is_detected(self):
+    def test_tampering_with_the_band_is_detected(self):
         pair = generate_keypair()
         verdict = VerdictSigner(pair).sign(make_payload())
-        verdict.payload.band = Band.GREEN
+        verdict.payload.risk = Risk.GREEN
         ok, _ = VerdictVerifier(pair.public_key).verify(verdict, check_replay=False)
         assert not ok
 
@@ -81,7 +82,7 @@ class TestVerdict:
     def test_stale_verdict_is_rejected(self):
         pair = generate_keypair()
         payload = make_payload()
-        payload.ts_ms -= 10 * 60 * 1000
+        payload.timestamp -= 10 * 60 * 1000
         verdict = VerdictSigner(pair).sign(payload)
         ok, reason = VerdictVerifier(pair.public_key).verify(verdict)
         assert not ok and "stale" in reason
@@ -197,13 +198,13 @@ class TestVault:
 class TestAuditLog:
     def _log(self, tmp_path):
         pair = generate_keypair()
-        return AuditLog(tmp_path / "audit.db", signer=pair), pair
+        return AuditLog(tmp_path / "audit.db", signer=pair, merkle_checkpoints=True), pair
 
     def test_chain_intact_after_appends(self, tmp_path):
         log, pair = self._log(tmp_path)
         signer = VerdictSigner(pair)
         for i in range(6):
-            log.append(signer.sign(make_payload(call_id=f"c{i}")))
+            log.append(signer.sign(make_payload(session_id=f"s{i}")))
         ok, reason = log.verify_chain()
         assert ok, reason
         log.close()
@@ -212,7 +213,7 @@ class TestAuditLog:
         log, pair = self._log(tmp_path)
         signer = VerdictSigner(pair)
         for i in range(4):
-            log.append(signer.sign(make_payload(call_id=f"c{i}")))
+            log.append(signer.sign(make_payload(session_id=f"s{i}")))
         log._conn.execute("UPDATE entries SET payload = '{\"x\":1}' WHERE seq = 1")
         log._conn.commit()
         ok, reason = log.verify_chain()
@@ -223,7 +224,7 @@ class TestAuditLog:
         log, pair = self._log(tmp_path)
         signer = VerdictSigner(pair)
         for i in range(5):
-            log.append(signer.sign(make_payload(call_id=f"c{i}")))
+            log.append(signer.sign(make_payload(session_id=f"s{i}")))
         log._conn.execute("DELETE FROM entries WHERE seq = 2")
         log._conn.commit()
         ok, _ = log.verify_chain()
@@ -234,7 +235,7 @@ class TestAuditLog:
         log, pair = self._log(tmp_path)
         signer = VerdictSigner(pair)
         for i in range(3):
-            log.append(signer.sign(make_payload(call_id=f"c{i}")))
+            log.append(signer.sign(make_payload(session_id=f"s{i}")))
         assert log.checkpoint() is not None
         ok, reason = log.verify_checkpoint(pair.public_key)
         assert ok, reason
