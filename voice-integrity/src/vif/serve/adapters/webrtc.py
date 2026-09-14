@@ -96,28 +96,27 @@ class WebRTCAdapter(IngestAdapter):
 
     @staticmethod
     def _decode(frame, resampler) -> np.ndarray:
-        """Opus at 48 kHz stereo to mono float32 at the internal rate."""
+        """Opus at 48 kHz to mono float32 at the internal rate.
+
+        The resampler downmixes to mono directly.  Verified to preserve level
+        for both mono and stereo input; upmixing to stereo and averaging would
+        instead cost a mono stream 3 dB through the resampler's pan law.
+        """
         resampled = resampler.resample(frame)
         frames = resampled if isinstance(resampled, list) else [resampled]
-        chunks = []
-        for f in frames:
-            if f is None:
-                continue
-            arr = f.to_ndarray()
-            chunks.append(arr.reshape(-1))
+        chunks = [f.to_ndarray().reshape(-1) for f in frames if f is not None]
         if not chunks:
             return np.zeros(0, dtype=np.float32)
-        pcm = np.concatenate(chunks).astype(np.float32) / 32768.0
-        return pcm
+        return np.concatenate(chunks).astype(np.float32) / 32768.0
 
     # -- transport ---------------------------------------------------------
 
     async def rtt_ms(self) -> float | None:
-        """Round-trip time from RTCP.
+        """Round-trip time from RTCP, or None until reports have arrived.
 
-        The liveness branch subtracts this rather than trying to recover it
-        acoustically.  Free, exact, and it sidesteps a fight with the far
-        end's echo canceller.
+        Recorded alongside the liveness features for context only.  Those
+        features compare the two sides of the same call, which already cancels
+        network delay, so nothing downstream depends on this value.
         """
         if self._pc is None:
             return None

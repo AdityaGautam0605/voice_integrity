@@ -55,6 +55,10 @@ def crop_or_pad(wav: np.ndarray, length: int, rng: np.random.Generator | None = 
     dropped by the VAD gate at inference time, so training on it teaches the
     model something it will never see.
     """
+    if len(wav) == 0:
+        # An empty or fully corrupt file.  Tiling nothing yields nothing, and a
+        # short array would break batch collation mid-epoch.
+        return np.zeros(length, dtype=np.float32)
     if len(wav) == length:
         return wav
     if len(wav) > length:
@@ -63,7 +67,7 @@ def crop_or_pad(wav: np.ndarray, length: int, rng: np.random.Generator | None = 
         else:
             start = int(rng.integers(0, len(wav) - length + 1))
         return wav[start : start + length]
-    reps = int(np.ceil(length / max(len(wav), 1)))
+    reps = int(np.ceil(length / len(wav)))
     return np.tile(wav, reps)[:length]
 
 
@@ -124,13 +128,25 @@ class FeatureDataset(Dataset):
             raise FileNotFoundError(
                 f"feature cache not found: {self.feature_dir}. Run the extraction pass first."
             )
+        # Items whose audio was unreadable at extraction have no feature file.
+        # Skip them here rather than crash mid-epoch, and keep the original
+        # manifest index so scores still line up with the manifest.
+        self.indices = [i for i in range(len(items)) if (self.feature_dir / f"{i}.npy").exists()]
+        missing = len(items) - len(self.indices)
+        if missing:
+            log.warning(
+                "%d of %d items have no cached features in %s - skipping them",
+                missing,
+                len(items),
+                self.feature_dir,
+            )
 
     def __len__(self) -> int:
-        return len(self.items)
+        return len(self.indices)
 
-    def __getitem__(self, index: int):
-        path = self.feature_dir / f"{index}.npy"
-        feats = np.load(path)
+    def __getitem__(self, position: int):
+        index = self.indices[position]
+        feats = np.load(self.feature_dir / f"{index}.npy")
         if self.max_frames is not None and feats.shape[0] > self.max_frames:
             feats = feats[: self.max_frames]
         target = self.items[index].target

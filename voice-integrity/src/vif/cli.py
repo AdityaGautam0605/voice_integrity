@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,9 @@ log = get_logger("vif")
 def cmd_serve(args: argparse.Namespace) -> int:
     from vif.serve.server import run
 
+    # The server loads configuration inside its lifespan, so hand the directory
+    # over through the environment instead of silently dropping --config.
+    os.environ["VIF_CONFIG"] = args.config
     run(host=args.host, port=args.port)
     return 0
 
@@ -67,7 +71,9 @@ def cmd_check(args: argparse.Namespace) -> int:
     security = config.security
     print(f"  sign verdicts {'yes' if security.sign_verdicts else 'no'}")
     print(f"  audit log     {'yes' if security.audit_log else 'no'}")
-    print(f"  api token     {'set' if security.api_token else 'not set (open)'}")
+    # Same precedence as the server: the environment variable wins.
+    token = os.environ.get("VIF_API_TOKEN") or security.api_token
+    print(f"  api token     {'set' if token else 'not set (open)'}")
     print(f"  merkle        {'on' if security.merkle_checkpoints else 'off (roadmap)'}")
     print(f"  cancelable    {'on' if security.cancelable_templates else 'off (roadmap)'}")
 

@@ -20,7 +20,7 @@ uv venv --python 3.11 && source .venv/bin/activate
 uv pip install -r requirements-base.txt -r requirements-serve.txt -r requirements-dev.txt
 
 PYTHONPATH=src python scripts/smoke_test.py    # end to end, no downloads
-PYTHONPATH=src python -m pytest tests/ -q      # 74 tests
+PYTHONPATH=src python -m pytest tests/ -q      # 128 tests
 ```
 
 The smoke test exercises every layer using a stub detector and synthetic
@@ -31,7 +31,7 @@ weights exist.
 
 | | |
 |---|---|
-| Backend | complete, 74 tests passing |
+| Backend | complete, 128 tests passing |
 | Training notebooks | written, not yet run |
 | Model weights | not trained yet |
 | Corpora | not downloaded yet |
@@ -44,7 +44,7 @@ Training runs on Colab from `voice-integrity/notebooks/`, in numbered order.
 Four separable questions, four separable mechanisms, because they fail
 differently: **was this voice manufactured** (artifact detection), **is this
 the enrolled person** (speaker verification), **is a machine in the loop**
-(conversational liveness), and **what do we do about it** (fusion and policy).
+(conversational liveness), and **what do we do about it** (scoring and policy).
 
 The system is a passive observer — it never sits in the media path, so its
 failure modes degrade the verdict, never the call.

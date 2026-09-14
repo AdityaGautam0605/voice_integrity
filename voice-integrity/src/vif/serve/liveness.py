@@ -171,7 +171,10 @@ def _coefficient_of_variation(gaps: np.ndarray) -> float | None:
     mean = float(np.mean(gaps))
     if abs(mean) < 1e-6:
         return None
-    return float(np.std(gaps) / abs(mean))
+    cv = float(np.std(gaps) / abs(mean))
+    # Round floating-point noise to zero.  Two perfectly regular sides would
+    # otherwise produce CVs near 1e-13 whose ratio is arbitrary.
+    return cv if cv > 1e-6 else 0.0
 
 
 def compute_features(
@@ -197,12 +200,15 @@ def compute_features(
         features.fast_response_count = int((caller_gaps < config.fast_response_ms).sum())
     if agent_gaps.size:
         features.agent_overlap_rate = float((agent_gaps < 0).mean())
+        features.agent_fast_response_count = int((agent_gaps < config.fast_response_ms).sum())
     if features.caller_overlap_rate is not None and features.agent_overlap_rate is not None:
         features.overlap_delta = features.agent_overlap_rate - features.caller_overlap_rate
 
     features.caller_gap_cv = _coefficient_of_variation(caller_gaps)
     features.agent_gap_cv = _coefficient_of_variation(agent_gaps)
-    if features.caller_gap_cv and features.agent_gap_cv:
+    # `is not None`, not truthiness: a perfectly regular caller has a CV of
+    # exactly 0.0, which is the most machine-like case and must not be skipped.
+    if features.caller_gap_cv is not None and features.agent_gap_cv:
         features.variance_ratio = features.caller_gap_cv / features.agent_gap_cv
 
     return features
@@ -212,11 +218,10 @@ def features_to_llr(features: LivenessFeatures, config: LivenessConfig) -> float
     """Combine shape features into a log-likelihood ratio.
 
     Returns None below `min_transitions` rather than a weak score.  A branch
-    that has not seen enough evidence should abstain, not guess: an
-    unjustified small LLR still moves the fused posterior.
+    that has not seen enough evidence should abstain, not guess.
 
     The weights here are a documented prior, not a fit.  Replace them with
-    coefficients learned from the collected corpus (notebook 07) before
+    coefficients learned from the collected corpus (notebook 06) before
     quoting any number from this branch.
     """
     if features.n_transitions < config.min_transitions:
@@ -233,11 +238,13 @@ def features_to_llr(features: LivenessFeatures, config: LivenessConfig) -> float
     if features.overlap_delta is not None:
         llr += float(np.clip(features.overlap_delta * 6.0, -2.0, 2.0))
 
-    # 3. Absence of fast responses despite ample opportunity.
-    #    P(no fast response | human) = (1 - p)^n.  With p about 0.15, ten
-    #    transitions gives roughly 0.20 - suggestive, not conclusive.  The
-    #    log-odds below encode exactly that strength and no more.
-    if features.fast_response_count == 0 and features.n_transitions >= config.min_transitions:
+    # 3. The caller never responds fast while the known human in the same call
+    #    does.  Requiring fast responses from the agent keeps this within call:
+    #    a slow, deliberate conversation - or a language with longer turn gaps -
+    #    is slow on both sides and must not count as evidence.
+    #    P(no fast response | human) = (1 - p)^n; with p about 0.15, ten
+    #    transitions gives roughly 0.20, suggestive rather than conclusive.
+    if features.fast_response_count == 0 and features.agent_fast_response_count > 0:
         p_fast = 0.15
         evidence = -math.log(max((1.0 - p_fast) ** features.n_transitions, 1e-6))
         llr += float(np.clip(evidence, 0.0, 1.5))

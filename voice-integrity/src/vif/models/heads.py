@@ -68,7 +68,10 @@ class LightHead(nn.Module):
 
     @staticmethod
     def score_from_logits(logits: torch.Tensor) -> torch.Tensor:
-        return logits[:, 1] - logits[:, 0]
+        # Class 0 is spoof and class 1 is bonafide - Item.target, the class
+        # weights and the loss all agree - so spoof minus bonafide means
+        # 'more synthetic'.  Inverting this silently swaps every verdict.
+        return logits[:, 0] - logits[:, 1]
 
 
 def build_head(config: HeadConfig, feat_dim: int = 1024) -> nn.Module:

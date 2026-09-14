@@ -294,7 +294,7 @@ Both:  → ffmpeg codec simulation             → matched real/fake pairs, phon
 
 **wav2vec2-XLS-R (the front-end)** — a large pre-trained model converting raw audio into rich numerical descriptions. A **pre-trained ear**. Trained on 128 languages, so it handles Indian languages without special effort. We download it.
 
-**AASIST (the back-end)** — the small classifier on top of that ear making the real-vs-fake call. **The part we train.** 297K parameters.
+**AASIST (the back-end)** — the small classifier on top of that ear making the real-vs-fake call. **The part we train.** about 430K parameters.
 
 **ECAPA-TDNN (voiceprint)** — turns a voice clip into a fingerprint of ~192 numbers, an **embedding**. Compare with **cosine similarity** (−1 to 1, higher = more alike).
 
@@ -327,7 +327,7 @@ Both:  → ffmpeg codec simulation             → matched real/fake pairs, phon
 | GPU | **Kaggle free tier.** Stop thinking about it | Actual need is one ~30-min extraction pass |
 | Front-end | **`facebook/wav2vec2-xls-r-300m`** | 128 languages of pretraining is load-bearing for the Indian claim. WavLM is English-heavy |
 | Front-end training | **Frozen + cached for dev; top-6 unfrozen for the final run** | Frozen alone leaves accuracy on the table; full fine-tuning destroys iteration speed |
-| Back-end | **AASIST** | 297K params. A download, not a build |
+| Back-end | **AASIST** | ~430K params. Reimplemented from the papers, trained here |
 | Training data | **ASVspoof 2019 LA** | The standard. Comparable to published work |
 | Out-of-domain eval | **"In-the-Wild"** | Real deepfakes from the internet, 38 h, 58 public figures |
 | Prosody branch | **Build it thin. Never in the critical path** | Language-dependent; SSL features already encode prosody |
@@ -375,7 +375,7 @@ L2   wav2vec2-XLS-R-300m                    frozen in dev · top-6 unfrozen fina
       ┌───────┼───────────────┐                                                      │
       ▼       ▼               ▼                                                      ▼
 L3  A·AASIST  B·ECAPA-TDNN   C·prosody stats                            D·LIVENESS
-    297K      192-d           pitch/pauses/rate                          turn-taking
+    430K      192-d           pitch/pauses/rate                          turn-taking
     trained   pretrained      thin                                       ZERO audio
     ↓ spoof   ↓ cosine vs     ↓ small weight                             ↓ asymmetry
       LLR       voiceprint                                                 LLR
@@ -815,7 +815,7 @@ Report the poor out-of-domain number on In-the-Wild rather than only the flatter
 | Role | Model | Notes |
 |---|---|---|
 | Front-end | `facebook/wav2vec2-xls-r-300m` | 300M params · 436k hrs · 128 languages |
-| Back-end | AASIST (clovaai reference impl.) | 297K params · graph attention · **a repo, not a package** |
+| Back-end | AASIST (SSL-front-end variant, reimplemented from the papers) | ~430K params · graph attention |
 | Speaker | `speechbrain/spkrec-ecapa-voxceleb` | 192-dim, pretrained on VoxCeleb |
 | VAD | Silero VAD | pip-installable, tiny, fast |
 

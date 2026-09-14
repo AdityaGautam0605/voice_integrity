@@ -125,19 +125,24 @@ class CallSession:
         self.started_ns = time.monotonic_ns()
         self.challenge: Challenge | None = None
         self.last_decision: Decision | None = None
-        self._inference_busy = False
+        self._inference_task: asyncio.Task | None = None
         self._closed = False
+        # Media clock: the end of the latest audio seen.  Liveness closes open
+        # utterances at this time, which shares a clock with the turn events -
+        # the wall clock does not whenever audio is replayed faster than real time.
+        self._media_ns = 0
 
         log.info("session %s opened", session_id)
 
     # -- ingest ------------------------------------------------------------
 
     async def consume(self, adapter: IngestAdapter, side: Side = Side.CALLER) -> None:
-        """Drain one direction until it ends."""
+        """Drain one direction until it ends, then let in-flight scoring finish."""
         async for frame in adapter.frames(side):
             if self._closed:
                 return
             await self.handle_frame(frame)
+        await self.wait_idle()
 
     async def handle_frame(self, frame: AudioFrame) -> None:
         """Gate, buffer, and score when a window is ready."""
@@ -158,6 +163,7 @@ class CallSession:
             chunk_ts = self._stage_ts[side]
             self._stage[side] = self._stage[side][vad_frame:]
             self._stage_ts[side] = chunk_ts + chunk_ns
+            self._media_ns = max(self._media_ns, chunk_ts + chunk_ns)
 
             speaking = self.vad.is_speech(chunk, audio_cfg.vad_threshold)
 
@@ -180,28 +186,38 @@ class CallSession:
         await self._maybe_score()
 
     async def _maybe_score(self) -> None:
-        """Score every ready window, dropping stale ones under backpressure."""
+        """Start scoring the newest window; drop any that arrive while busy.
+
+        Inference runs as a background task, so frame reception never waits on
+        it.  If the detector is slower than the hop, windows that become ready
+        in the meantime are dropped rather than queued - a queue would make the
+        reported score fall further behind the live call on every window while
+        everything looked healthy.
+        """
         while self.buffer.ready:
             window = self.buffer.take_window()
             if window is None:
                 return
-            if self._inference_busy:
+            if self._inference_task is not None and not self._inference_task.done():
                 self.stats.windows_dropped += 1
                 continue
-            await self._score_window(window)
+            self._inference_task = asyncio.create_task(self._score_window(window))
+
+    async def wait_idle(self) -> None:
+        """Wait for in-flight inference, so the final window is not lost."""
+        task = self._inference_task
+        if task is not None and not task.done():
+            await task
 
     async def _score_window(self, window: np.ndarray) -> None:
         loop = asyncio.get_running_loop()
-        self._inference_busy = True
         started = time.perf_counter()
         try:
-            # THE critical line: inference must not run on the event loop.
+            # Inference must not run on the event loop.
             raw = await loop.run_in_executor(None, self.detector.score_window, window)
         except Exception as exc:  # noqa: BLE001
             log.error("inference failed on session %s: %s", self.session_id, exc)
             return
-        finally:
-            self._inference_busy = False
 
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self.stats.inference_ms_total += elapsed_ms
@@ -209,13 +225,24 @@ class CallSession:
         self.stats.windows_scored += 1
 
         self.scorer.update_spoof(raw)
-        self.scorer.update_speaker(await self._speaker_similarity(window, loop))
+        try:
+            similarity = await self._speaker_similarity(window, loop)
+        except Exception as exc:  # noqa: BLE001
+            # An optional branch must not take the spoof score down with it - nor
+            # the verdict, which waits on this task at teardown.  It abstains.
+            log.error("speaker branch failed on session %s: %s", self.session_id, exc)
+            similarity = None
+        self.scorer.update_speaker(similarity)
 
         if self.liveness is not None:
             _features, score = self.liveness.snapshot(self._now_s())
             self.scorer.update_liveness(score)
 
-        await self._emit()
+        try:
+            await self._emit()
+        except Exception as exc:  # noqa: BLE001
+            # A client that has gone away must not take the scoring task down.
+            log.warning("could not deliver result for session %s: %s", self.session_id, exc)
 
     async def _speaker_similarity(self, window: np.ndarray, loop) -> float | None:
         """Independent branch.  Abstains when there is no enrolment."""
@@ -301,6 +328,7 @@ class CallSession:
             ),
             windows_scored=self.stats.windows_scored,
             liveness=liveness_features,
+            liveness_score=self.scorer.state.liveness_score,
             model_version=self.detector.model_version,
             model_checksum=getattr(self.detector, "model_checksum", ""),
             policy_version=self.config.policy.version,
@@ -317,6 +345,8 @@ class CallSession:
         if self._closed:
             return
         self._closed = True
+        if self._inference_task is not None and not self._inference_task.done():
+            self._inference_task.cancel()
         self.buffer.zeroise()
         self._stage = {
             Side.CALLER: np.zeros(0, dtype=np.float32),
@@ -326,7 +356,7 @@ class CallSession:
         log.info("session %s closed - %s", self.session_id, self.stats.as_dict())
 
     def _now_s(self) -> float:
-        return time.monotonic_ns() / 1e9
+        return self._media_ns / 1e9
 
     def __enter__(self) -> CallSession:
         return self

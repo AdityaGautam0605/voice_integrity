@@ -23,11 +23,10 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HUB_DISABLE_TELEMETRY=1
 
 COPY requirements-base.txt requirements-serve.txt ./
+# silero-vad depends on torch and torchaudio.  Install the CPU wheels first,
+# or pip resolves the default CUDA build and the image grows by gigabytes.
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements-base.txt -r requirements-serve.txt
-
-# Torch is optional in the image: the CPU wheel is large, and the ONNX path
-# does not need it.  Uncomment for the full stack.
-# RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 COPY configs/ ./configs/
 COPY src/ ./src/

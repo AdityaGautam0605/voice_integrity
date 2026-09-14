@@ -10,7 +10,7 @@ jointly spectral and temporal.  A vocoder leaves correlated traces across
 frequency bands *and* across time, and the heterogeneous graph attention here
 models both, plus their interaction, instead of collapsing one away.
 
-Around 300K trainable parameters.  Cheap to train, cheap to run, and small
+About 430K trainable parameters, most of them in the 1024->128 input projection.  Cheap to train, cheap to run, and small
 enough that the on-device tier can carry it without the front end.
 """
 
@@ -113,7 +113,9 @@ class HtrgGraphAttentionLayer(nn.Module):
         master: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         n1, n2 = x1.size(1), x2.size(1)
-        x = torch.cat([x1, x2], dim=1)
+        # Type-specific projections first, so spectral and temporal nodes enter
+        # the shared attention from their own learned spaces.
+        x = torch.cat([self.proj_type1(x1), self.proj_type2(x2)], dim=1)
         if master is None:
             master = torch.mean(x, dim=1, keepdim=True)
 
@@ -121,7 +123,7 @@ class HtrgGraphAttentionLayer(nn.Module):
         att_map = self._attention(x, n1, n2)
         master_map = self._master_attention(x, master)
 
-        master = self._update_master(x, master_map)
+        master = self._update_master(x, master, master_map)
         x = self._project(x, att_map)
         x = self.act(self._batch_norm(x))
 
@@ -151,9 +153,13 @@ class HtrgGraphAttentionLayer(nn.Module):
         att = torch.matmul(att, self.att_weightM)
         return F.softmax(att / self.temperature, dim=-2)
 
-    def _update_master(self, x: torch.Tensor, master_map: torch.Tensor) -> torch.Tensor:
+    def _update_master(
+        self, x: torch.Tensor, master: torch.Tensor, master_map: torch.Tensor
+    ) -> torch.Tensor:
         weighted = torch.matmul(master_map.transpose(-2, -1), x)
-        return self.proj_with_attM(weighted) + self.proj_without_attM(weighted)
+        # The residual path carries the previous master state, as in the paper.
+        # Feeding it the attended nodes again left the master with no memory.
+        return self.proj_with_attM(weighted) + self.proj_without_attM(master)
 
     def _project(self, x: torch.Tensor, att_map: torch.Tensor) -> torch.Tensor:
         weighted = torch.matmul(att_map.squeeze(-1), x)
@@ -178,7 +184,7 @@ class GraphPool(nn.Module):
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         scores = self.sigmoid(self.proj(self.drop(h)))
-        k = max(2, int(h.size(1) * self.ratio))
+        k = min(h.size(1), max(2, int(h.size(1) * self.ratio)))
         _, idx = torch.topk(scores.squeeze(-1), k, dim=1)
         idx_expanded = idx.unsqueeze(-1).expand(-1, -1, h.size(-1))
         selected = torch.gather(h, 1, idx_expanded)
@@ -201,7 +207,6 @@ class ResidualBlock(nn.Module):
         self.downsample = in_ch != out_ch
         if self.downsample:
             self.conv_down = nn.Conv2d(in_ch, out_ch, kernel_size=(1, 3), padding=(0, 1))
-        self.pool = nn.MaxPool2d((1, 3))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x
@@ -212,7 +217,7 @@ class ResidualBlock(nn.Module):
         if self.downsample:
             identity = self.conv_down(identity)
         out = out + identity
-        return self.pool(out)
+        return out
 
 
 class AASIST(nn.Module):
@@ -222,9 +227,9 @@ class AASIST(nn.Module):
     Output : (B, 2) logits, and the pooled embedding for inspection
 
     The scalar score used everywhere downstream is
-    ``logits[:, 1] - logits[:, 0]``, oriented so that **higher means more
-    synthetic**.  Keep that orientation consistent or every calibration
-    constant silently flips sign.
+    ``logits[:, 0] - logits[:, 1]`` (class 0 is spoof), oriented so that
+    **higher means more synthetic**.  Keep that orientation consistent or every
+    calibration constant silently flips sign.
     """
 
     def __init__(
@@ -256,7 +261,7 @@ class AASIST(nn.Module):
         enc_dim = filts[4]
 
         # Positional embeddings for the two node types.
-        self.pos_S = _new_parameter(1, 42, enc_dim)
+        self.pos_S = _new_parameter(1, proj_dim // 3, enc_dim)
 
         self.GAT_S = GraphAttentionLayer(enc_dim, gat_dims[0], temperature=temperatures[0])
         self.GAT_T = GraphAttentionLayer(enc_dim, gat_dims[0], temperature=temperatures[1])
@@ -291,12 +296,16 @@ class AASIST(nn.Module):
         # x: (B, T, feat_dim)
         x = self.proj(x)  # (B, T, proj_dim)
         x = x.transpose(1, 2).unsqueeze(1)  # (B, 1, proj_dim, T)
+        # One up-front pool, as in the SSL variant of AASIST.  The raw-waveform
+        # original pools time by 3 inside every residual block, which is fine
+        # for ~21k time steps but reduces 201 SSL frames to zero by block five.
+        x = F.max_pool2d(x, (3, 3))  # (B, 1, proj_dim // 3, T // 3)
         x = self.act(self.first_bn(x))
         x = self.encoder(x)  # (B, C, F', T')
 
         # Spectral nodes: collapse time.  Temporal nodes: collapse frequency.
         e_S, _ = torch.max(torch.abs(x), dim=3)
-        e_S = e_S.transpose(1, 2)  # (B, F', C)
+        e_S = e_S.transpose(1, 2) + self.pos_S  # (B, F', C)
         e_T, _ = torch.max(torch.abs(x), dim=2)
         e_T = e_T.transpose(1, 2)  # (B, T', C)
 
@@ -346,7 +355,10 @@ class AASIST(nn.Module):
         Fixed here so that no caller can accidentally invert the orientation
         that the calibration constants were fitted against.
         """
-        return logits[:, 1] - logits[:, 0]
+        # Class 0 is spoof and class 1 is bonafide - Item.target, the class
+        # weights and the loss all agree - so spoof minus bonafide means
+        # 'more synthetic'.  Inverting this silently swaps every verdict.
+        return logits[:, 0] - logits[:, 1]
 
 
 def count_parameters(model: nn.Module) -> int:

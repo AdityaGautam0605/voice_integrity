@@ -18,6 +18,11 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from vif.common.logging import get_logger
+from vif.common.types import Action
+
+log = get_logger(__name__)
+
 
 class AudioConfig(BaseModel):
     sample_rate: int = 16000
@@ -138,6 +143,12 @@ class ActionConfig(BaseModel):
     def _check(self) -> ActionConfig:
         if "TERMINATE" in self.red.upper():
             raise ValueError("the system gates the action, it never terminates the call")
+        # Checked at load, not at first use: a misspelt action would otherwise
+        # pass startup and then fail on the first scored window, verdict and all.
+        known = sorted(action.value for action in Action)
+        for band, value in (("green", self.green), ("amber", self.amber), ("red", self.red)):
+            if value not in known:
+                raise ValueError(f"unknown action for {band}: {value!r} (expected one of {known})")
         return self
 
 
@@ -223,6 +234,10 @@ def load_config(
     the synthetic smoke path work without any YAML present.
     """
     config_dir = Path(config_dir)
+    if not config_dir.is_dir():
+        # Every setting silently taking its default is how a mistyped --config
+        # goes unnoticed, so say so.
+        log.warning("config directory %s not found - using built-in defaults", config_dir)
     root_path = Path(root) if root is not None else config_dir.parent
     policy_blob = _read_yaml(config_dir / "policy.yaml")
     return AppConfig(

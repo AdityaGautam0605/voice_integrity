@@ -16,6 +16,7 @@ against itself.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -64,8 +65,22 @@ def extract_features(
     window = config.model.audio.window_samples
     sample_rate = config.model.audio.sample_rate
     rng = np.random.default_rng(seed)
-    conditions: list[str] = []
     written = 0
+
+    # The augmenter is stochastic, so the codec actually applied to each item
+    # is logged as each batch lands.  A run killed part-way - a Colab
+    # disconnect - then resumes with its codec labels intact, instead of
+    # relabelling everything already extracted as the manifest default.
+    conditions_log = out_dir / "conditions.jsonl"
+    if overwrite and conditions_log.exists():
+        conditions_log.unlink()
+    realised: dict[int, str] = {}
+    if conditions_log.exists():
+        with conditions_log.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    row = json.loads(line)
+                    realised[int(row["index"])] = row["condition"]
 
     for start in tqdm(range(0, len(items), batch_size), desc="extracting", unit="batch"):
         batch_items = items[start : start + batch_size]
@@ -73,21 +88,18 @@ def extract_features(
 
         for offset, item in enumerate(batch_items):
             index = start + offset
-            target = out_dir / f"{index}.npy"
-            if target.exists() and not overwrite:
-                conditions.append(item.condition)
+            if (out_dir / f"{index}.npy").exists() and not overwrite:
                 continue
             try:
                 wav = load_audio(item.path, sample_rate)
             except Exception as exc:  # noqa: BLE001
                 log.warning("skipping %s: %s", item.path, exc)
-                conditions.append("unreadable")
                 continue
 
             condition = item.condition
             if augmenter is not None:
                 wav, condition = augmenter(wav)
-            conditions.append(condition)
+            realised[index] = condition
 
             batch_wavs.append(crop_or_pad(wav, window, rng))
             batch_indices.append(index)
@@ -99,15 +111,20 @@ def extract_features(
             tensor = torch.from_numpy(np.stack(batch_wavs)).float().to(device)
             feats = frontend(tensor).cpu().numpy().astype(np.float16)
 
+        # Log first, then save.  A killed process (a Colab disconnect) loses
+        # unflushed writes, and a feature file without its log line would
+        # resume under the manifest's default label.  A log line without its
+        # feature file is harmless: the item is re-extracted and re-logged.
+        with conditions_log.open("a", encoding="utf-8") as fh:
+            for index in batch_indices:
+                fh.write(json.dumps({"index": index, "condition": realised[index]}) + "\n")
         for index, feat in zip(batch_indices, feats, strict=True):
             np.save(out_dir / f"{index}.npy", feat)
             written += 1
 
-    # Persist the realised conditions: the augmenter is stochastic, so the
-    # per-codec breakdown at eval time must come from what actually happened,
-    # not from what the config asked for.
-    for item, condition in zip(items, conditions, strict=False):
-        item.condition = condition
+    for index, item in enumerate(items):
+        if index in realised:
+            item.condition = realised[index]
     write_manifest(items, out_dir / "manifest.jsonl")
 
     log.info("wrote %d feature files to %s", written, out_dir)

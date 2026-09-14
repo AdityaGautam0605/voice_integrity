@@ -234,7 +234,7 @@ class VoiceprintVault:
     def list_enrolled(self) -> list[EnrolmentRecord]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT speaker_id, tenant_id, template_dim, key_version, enrolled_ms "
+                "SELECT speaker_id, tenant_id, template_dim, key_version, enrolled_ms, transform "
                 "FROM voiceprints WHERE tenant_id = ?",
                 (self.tenant_id,),
             ).fetchall()
@@ -244,7 +244,8 @@ class VoiceprintVault:
                 tenant_id=r[1],
                 template_dim=r[2],
                 key_version=r[3],
-                transform_version=1,
+                # Read from the record: 0 for a plain embedding, >= 1 when transformed.
+                transform_version=int(json.loads(r[5])["version"]),
                 enrolled_ms=r[4],
             )
             for r in rows

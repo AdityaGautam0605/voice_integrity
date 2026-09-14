@@ -124,7 +124,9 @@ def degrade_directory(
             log.warning("skipping %s: %s", path, exc)
             continue
         degraded, condition = augmenter(wav)
-        target = out_dir / f"{path.stem}__{condition}.wav"
+        # Keep the <language>/ folder: it is the only record of the clip's language.
+        target = out_dir / path.relative_to(source_dir).parent / f"{path.stem}__{condition}.wav"
+        target.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(target), np.clip(degraded, -1.0, 1.0), config.model.audio.sample_rate)
         written.append(target)
 
@@ -154,11 +156,26 @@ def main() -> int:
 
     items: list[Item] = []
 
+    import soundfile as sf
+
+    sample_rate = config.model.audio.sample_rate
     for language, clips in selected.items():
         for clip in clips:
+            # The genuine half is written to <out>/real/<language>/ as 16 kHz wav.
+            # --degrade and notebook 07 both read it from there; without the copy
+            # only the fakes were ever degraded, so codec condition tracked the label.
+            real_copy = real_out / language / f"{clip.stem}.wav"
+            if not real_copy.exists():
+                try:
+                    wav = load_audio(clip, sample_rate)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("skipping %s: %s", clip, exc)
+                    continue
+                real_copy.parent.mkdir(parents=True, exist_ok=True)
+                sf.write(str(real_copy), wav, sample_rate)
             items.append(
                 Item(
-                    path=str(clip),
+                    path=str(real_copy),
                     label="bonafide",
                     split="eval",
                     corpus="indian",

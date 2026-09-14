@@ -72,7 +72,7 @@ class Scorer:
     def __init__(self, config: ScoringConfig | None = None, calibrator=None):
         self.config = config or ScoringConfig()
         self.calibrator = calibrator
-        self.state = ScoringState()
+        self.state = self._new_state()
         self.calibrated = bool(calibrator is not None and calibrator.has("spoof"))
         if not self.calibrated:
             log.warning(
@@ -154,7 +154,11 @@ class Scorer:
         return Risk.GREEN
 
     def reset(self) -> None:
-        self.state = ScoringState()
+        self.state = self._new_state()
+
+    def _new_state(self) -> ScoringState:
+        # History sized from config: a fixed length silently capped smoothing_windows.
+        return ScoringState(history=deque(maxlen=self.config.smoothing_windows))
 
 
 def risk_from_probability(probability: float, config: ScoringConfig) -> Risk:

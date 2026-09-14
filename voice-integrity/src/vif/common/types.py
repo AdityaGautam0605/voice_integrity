@@ -97,6 +97,7 @@ class LivenessFeatures(BaseModel):
     agent_gap_cv: float | None = None
     variance_ratio: float | None = None
     fast_response_count: int = 0
+    agent_fast_response_count: int = 0
     rtt_ms: float | None = None
 
 
@@ -134,6 +135,7 @@ class VerdictPayload(BaseModel):
     speech_seconds: float = 0.0
     windows_scored: int = 0
     liveness: LivenessFeatures | None = None
+    liveness_score: float | None = None
     model_version: str = "unknown"
     model_checksum: str = ""
     policy_version: str = "policy-1.0.0"

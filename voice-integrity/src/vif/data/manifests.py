@@ -41,6 +41,12 @@ class Item:
     condition: str = "clean"
     extra: dict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # Forward slashes on every platform.  Windows accepts them and Linux does
+        # not accept backslashes - and a manifest built on a Windows laptop is
+        # read on Colab, where extraction would skip every item as unreadable.
+        self.path = str(self.path).replace("\\", "/")
+
     @property
     def target(self) -> int:
         """1 = bonafide, 0 = spoof.

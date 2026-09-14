@@ -112,7 +112,7 @@ def finetune(
     scaler = torch.amp.GradScaler("cuda", enabled=cfg.mixed_precision and device == "cuda")
     criterion = torch.nn.CrossEntropyLoss()
 
-    best_eer = 1.0
+    best_eer = float("inf")
     for epoch in range(cfg.epochs):
         frontend.train()
         head.train()

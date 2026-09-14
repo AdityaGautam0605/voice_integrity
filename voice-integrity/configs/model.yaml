@@ -30,7 +30,7 @@ speaker:
   embedding_dim: 192
 
 prosody:
-  enabled: false             # language-dependent; off unless per-language tuned
+  enabled: false             # reserved: prosody.py is an offline ablation, not wired into sessions
 
 liveness:
   enabled: false             # needs both directions and 10-20 turns; stretch

@@ -103,14 +103,13 @@ class SileroVAD(BaseVAD):
         import torch
 
         self._torch = torch
-        try:
-            from silero_vad import load_silero_vad
+        # The packaged model only.  torch.hub would fetch and run code from GitHub
+        # at runtime - a network call the offline demo cannot make, and remote
+        # code a security backend should not execute.  Without the package,
+        # build_vad("auto") falls back to the energy gate.
+        from silero_vad import load_silero_vad
 
-            self.model = load_silero_vad()
-        except ImportError:  # pragma: no cover - torch.hub fallback
-            self.model, _ = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True
-            )
+        self.model = load_silero_vad()
         self.model.eval()
 
     def reset(self) -> None:

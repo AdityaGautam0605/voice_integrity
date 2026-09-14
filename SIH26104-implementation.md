@@ -172,13 +172,7 @@ tenseal>=0.3              # CKKS homomorphic cosine similarity
 
 ## Not a pip package
 
-**AASIST.** Clone the reference implementation and vendor it into `src/models/aasist/`, pinning the commit. It is a research repo, not a published package.
-
-```bash
-git clone https://github.com/clovaai/aasist.git /tmp/aasist
-cp -r /tmp/aasist/models src/models/aasist/
-# record the commit hash in src/models/aasist/COMMIT
-```
+**AASIST** is reimplemented in `src/vif/models/aasist.py`, in the SSL-front-end configuration, so there is nothing to clone or vendor.
 
 ---
 
@@ -245,7 +239,7 @@ voice-integrity/
 │   │   ├── detector.py         # model wrapper, synchronous
 │   │   ├── session.py          # CallSession — the per-call spine
 │   │   ├── liveness.py         # Branch D statistics
-│   │   ├── fusion.py           # calibration + LLR accumulation
+│   │   ├── scoring.py          # calibration + bands per branch (replaced fusion.py)
 │   │   ├── policy.py           # bands, actions
 │   │   └── server.py           # FastAPI + aiortc wiring
 │   └── crypto/
@@ -317,11 +311,11 @@ Using four different generators matters. If all your fakes come from one tool, y
 |---|---|---|
 | `facebook/wav2vec2-xls-r-300m` | ~1.2 GB | Hugging Face |
 | `speechbrain/spkrec-ecapa-voxceleb` | ~80 MB | Hugging Face |
-| Silero VAD | ~2 MB | torch.hub or pip |
+| Silero VAD | ~2 MB | pip package `silero-vad` — the model ships inside it |
 
 ## Make the cache portable — do this before anything else
 
-Every one of these fetches from the internet on first use. **Your offline demo dies at the venue unless the caches are warm and repo-local.**
+Both Hugging Face models fetch from the internet on first use. **Your offline demo dies at the venue unless the caches are warm and repo-local.** Silero needs no warming: the backend loads it only from the installed package and never through `torch.hub`, so without the package it falls back to the energy VAD instead of reaching for the network.
 
 ```bash
 # Put this in .envrc or your activate script, on every machine
@@ -336,10 +330,8 @@ Then warm them once and verify:
 python -c "
 from transformers import Wav2Vec2Model
 from speechbrain.inference import EncoderClassifier
-import torch
 Wav2Vec2Model.from_pretrained('facebook/wav2vec2-xls-r-300m')
 EncoderClassifier.from_hparams('speechbrain/spkrec-ecapa-voxceleb')
-torch.hub.load('snakers4/silero-vad', 'silero_vad')
 print('caches warm')
 "
 ```
@@ -349,6 +341,8 @@ Now `cache/` can be zipped and copied to the demo machine. **Test it with the ne
 ---
 
 # 8. Configuration files
+
+> These were the planned shapes. The shipped files in `voice-integrity/configs/` are authoritative: independent scoring with probability thresholds (amber 0.50, red 0.80) replaced cross-branch fusion, and value-tiered thresholds were deferred — see the tech-stack recommendations review.
 
 ## `configs/model.yaml`
 
@@ -374,9 +368,11 @@ speaker:
   model_id: speechbrain/spkrec-ecapa-voxceleb
   embedding_dim: 192
 
-fusion:
-  llr_clamp: 4.0
-  weights: {spoof: 1.0, speaker: 0.6, prosody: 0.15, liveness: 0.8}
+scoring:                     # independent branches, no fusion weights
+  amber_threshold: 0.50
+  red_threshold: 0.80
+  speaker_threshold: 0.25
+  smoothing_windows: 5
   calibration: configs/calibration.json    # fitted on DEV ONLY
 ```
 
@@ -466,7 +462,7 @@ Then, in order:
 
 12. `src/serve/detector.py` — model wrapper, synchronous by design
 13. `src/serve/session.py` — `CallSession`, ring buffer, window assembly
-14. `src/serve/fusion.py` — Platt calibration + LLR accumulation
+14. `src/serve/scoring.py` — Platt calibration + per-branch bands (replaced the planned `fusion.py`)
 15. `src/serve/server.py` — FastAPI + `aiortc`
 
 > **Build ingest bidirectional now.** One `consume()` task per direction, labelled caller/agent, timestamped at RTP arrival. Retrofitting the second stream after the pipeline exists means reworking the session manager, the buffer and the timestamp path simultaneously.
@@ -535,7 +531,7 @@ Each phase is done when its check passes, not when the code compiles.
 
 **AMR-NB encoding is often missing.** `ffmpeg -encoders | grep amr` before P2 begins.
 
-**AASIST is a repo, not a package.** Vendor it, pin the commit.
+**Keep the score orientation.** Class 0 is spoof and class 1 is bonafide, so the synthetic score is spoof minus bonafide. Inverting it trains a model that looks 100% wrong and would flag every genuine caller.
 
 **ASVspoof needs terms accepted** on Edinburgh DataShare before download. Start day one.
 

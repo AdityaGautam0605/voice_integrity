@@ -39,6 +39,7 @@ class PlattParams:
     fitted_on: str = "dev"
     n_samples: int = 0
     branch: str = "spoof"
+    prior_log_odds: float = 0.0  # fitting split's class prior, removed from b
 
     def to_llr(self, score: float | np.ndarray) -> float | np.ndarray:
         return self.a * np.asarray(score, dtype=float) + self.b
@@ -145,16 +146,31 @@ def fit_platt(
         if abs(da) < tol and abs(db) < tol:
             break
 
+    # The logistic fit estimates a posterior, so its intercept absorbs the class
+    # ratio of the fitting split - about nine spoofs per bonafide on ASVspoof dev.
+    # Left in, a score carrying no evidence would read as p=0.9 and every genuine
+    # caller would open at RED.  Removing the split's prior log-odds leaves the
+    # likelihood ratio this module promises: llr = 0 means no evidence either way.
+    prior_log_odds = float(np.log(n_pos / n_neg))
+    b -= prior_log_odds
+
     log.info(
-        "calibrated branch '%s' on %s split (n=%d): llr = %.4f * score + %.4f",
+        "calibrated branch '%s' on %s split (n=%d, prior log-odds %.3f removed): "
+        "llr = %.4f * score + %.4f",
         branch,
         split,
         len(scores),
+        prior_log_odds,
         a,
         b,
     )
     return PlattParams(
-        a=float(a), b=float(b), fitted_on=split, n_samples=len(scores), branch=branch
+        a=float(a),
+        b=float(b),
+        fitted_on=split,
+        n_samples=len(scores),
+        branch=branch,
+        prior_log_odds=prior_log_odds,
     )
 
 

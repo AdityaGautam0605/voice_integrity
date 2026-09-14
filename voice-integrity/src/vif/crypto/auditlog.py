@@ -130,11 +130,13 @@ class AuditLog:
         self._reject_personal_data(payload)
 
         payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        prev_hash, seq = self._tip()
-        entry_hash = _hash_entry(seq, prev_hash, payload_json)
         ts_ms = int(time.time() * 1000)
 
+        # Reading the tip and writing the entry are one critical section: two
+        # appends that both read the same tip would claim the same seq.
         with self._lock:
+            prev_hash, seq = self._tip()
+            entry_hash = _hash_entry(seq, prev_hash, payload_json)
             self._conn.execute(
                 "INSERT INTO entries VALUES (?,?,?,?,?)",
                 (seq, prev_hash, entry_hash, payload_json, ts_ms),

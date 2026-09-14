@@ -80,7 +80,7 @@ class TorchDetector(BaseDetector):
     ):
         import torch
 
-        from vif.models.frontend import SSLFrontend
+        from vif.models.frontend import SSLFrontend, load_released_layers
         from vif.models.heads import load_checkpoint
 
         self._torch = torch
@@ -88,9 +88,12 @@ class TorchDetector(BaseDetector):
         self.device = device
         self._lock = threading.Lock()
 
+        checkpoint = Path(checkpoint or config.head.checkpoint)
+        if not checkpoint.exists():
+            # Check before building the front end, which may start a 1.2 GB download.
+            raise FileNotFoundError(f"detector checkpoint not found: {checkpoint}")
         self.frontend = SSLFrontend(config.frontend).to(device).eval()
 
-        checkpoint = checkpoint or config.head.checkpoint
         self.head, meta = load_checkpoint(
             checkpoint,
             config.head,
@@ -99,6 +102,9 @@ class TorchDetector(BaseDetector):
             expect_frontend=config.frontend.model_id,
         )
         self.head = self.head.to(device).eval()
+        if meta.get("condition") == "finetuned":
+            # Trained against released front-end layers, not the stock ones.
+            load_released_layers(self.frontend, checkpoint)
         self.model_version = (
             f"{meta.get('arch', 'head')}-{meta.get('condition', 'unknown')}-e{meta.get('epoch', 0)}"
         )
@@ -164,7 +170,7 @@ class OnnxDetector(BaseDetector):
         batch = np.asarray(wav, dtype=np.float32)[None, :]
         with self._lock:
             logits = self.session.run(None, {self.input_name: batch})[0]
-        return float(logits[0, 1] - logits[0, 0])
+        return float(logits[0, 0] - logits[0, 1])  # spoof minus bonafide
 
 
 class StubDetector(BaseDetector):
@@ -213,29 +219,43 @@ def _load_speaker_model(model_id: str, device: str):
         return None
 
 
+DEFAULT_ONNX_PATH = "models/exported/detector-int8.onnx"
+
+
 def build_detector(
     config: ModelConfig,
     checkpoint: str | Path | None = None,
     backend: str = "auto",
     device: str = "cpu",
+    onnx_path: str | Path | None = None,
 ) -> BaseDetector:
     """Pick a backend.
 
-    'auto' prefers the real model and falls back to the stub, so a machine
-    without weights still runs the full pipeline rather than failing at import.
+    'auto' tries the full torch stack, then an exported ONNX model.  It never
+    falls back to the stub on its own: a server that silently scored with a
+    stand-in would sign verdicts that detect nothing.  Ask for 'stub'
+    explicitly to run the pipeline without model weights.
     """
+    onnx_path = Path(onnx_path or DEFAULT_ONNX_PATH)
+
     if backend == "stub":
         log.warning("using StubDetector - no real detection is happening")
         return StubDetector(config.audio.window_samples)
-
-    if backend in ("onnx",):
-        path = Path("models/exported/detector-int8.onnx")
-        return OnnxDetector(path, config.audio.window_samples)
+    if backend == "onnx":
+        return OnnxDetector(onnx_path, config.audio.window_samples)
+    if backend == "torch":
+        return TorchDetector(config, checkpoint=checkpoint, device=device)
+    if backend != "auto":
+        raise ValueError(f"unknown detector backend: {backend}")
 
     try:
         return TorchDetector(config, checkpoint=checkpoint, device=device)
-    except Exception as exc:  # noqa: BLE001
-        if backend == "torch":
-            raise
-        log.warning("torch backend unavailable (%s) - falling back to StubDetector", exc)
-        return StubDetector(config.audio.window_samples)
+    except Exception as torch_error:  # noqa: BLE001
+        if onnx_path.exists():
+            log.warning("torch backend unavailable (%s) - using %s", torch_error, onnx_path)
+            return OnnxDetector(onnx_path, config.audio.window_samples)
+        raise RuntimeError(
+            f"no usable detector: the torch backend failed ({torch_error}) and there is no "
+            f"exported model at {onnx_path}.  Train and export one, or set VIF_BACKEND=stub "
+            "to run the pipeline without detection."
+        ) from torch_error

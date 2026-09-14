@@ -49,9 +49,11 @@ class _EndToEnd:
 
 
 def export(checkpoint: str, out_path: str, config_dir: str = "configs", quantize: bool = True):
+    import inspect
+
     import torch
 
-    from vif.models.frontend import SSLFrontend
+    from vif.models.frontend import SSLFrontend, load_released_layers
     from vif.models.heads import load_checkpoint
 
     config = load_config(config_dir)
@@ -65,6 +67,9 @@ def export(checkpoint: str, out_path: str, config_dir: str = "configs", quantize
         expect_window=window,
         expect_frontend=config.model.frontend.model_id,
     )
+    if meta.get("condition") == "finetuned":
+        # Otherwise the export pairs a fine-tuned head with the stock layers.
+        load_released_layers(frontend, checkpoint)
     model = _EndToEnd(frontend, head).eval()
 
     out_path = Path(out_path)
@@ -72,6 +77,11 @@ def export(checkpoint: str, out_path: str, config_dir: str = "configs", quantize
     fp32_path = out_path.with_name(out_path.stem + "-fp32.onnx")
 
     dummy = torch.randn(1, window, dtype=torch.float32)
+    export_kwargs = {}
+    if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+        # torch 2.9 defaults to the dynamo exporter, which needs onnxscript and
+        # treats dynamic_axes differently.  This script targets the TorchScript one.
+        export_kwargs["dynamo"] = False
     torch.onnx.export(
         model,
         dummy,
@@ -80,6 +90,7 @@ def export(checkpoint: str, out_path: str, config_dir: str = "configs", quantize
         output_names=["logits"],
         dynamic_axes={"waveform": {0: "batch"}, "logits": {0: "batch"}},
         opset_version=17,
+        **export_kwargs,
     )
     log.info("exported fp32 model to %s (%.1f MB)", fp32_path, fp32_path.stat().st_size / 1e6)
 
@@ -90,10 +101,15 @@ def export(checkpoint: str, out_path: str, config_dir: str = "configs", quantize
             model_input=str(fp32_path),
             model_output=str(out_path),
             weight_type=QuantType.QInt8,
+            # Transformer weights only.  Dynamically quantised convolutions run as
+            # ConvInteger, which on CPU measured about 13x slower than fp32 - so
+            # quantising them makes the demo model slower, not faster.
+            op_types_to_quantize=["MatMul", "Gather"],
         )
         log.info("exported int8 model to %s (%.1f MB)", out_path, out_path.stat().st_size / 1e6)
 
-    return out_path
+    # Without quantisation only the fp32 file exists, so return that path.
+    return out_path if quantize else fp32_path
 
 
 def benchmark(model_path: str, window: int = 64600, n_runs: int = 30) -> dict:

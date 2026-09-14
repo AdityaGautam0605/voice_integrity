@@ -8,10 +8,10 @@ presentation consumes them.
 
 ```bash
 PYTHONPATH=src python scripts/smoke_test.py     # end-to-end, no downloads needed
-PYTHONPATH=src python -m pytest tests/ -q       # 93 tests
+PYTHONPATH=src python -m pytest tests/ -q       # 128 tests
 PYTHONPATH=src python -m vif.cli check          # startup guards and preflight
-PYTHONPATH=src python -m vif.cli serve          # API on :8000
-docker compose up --build                       # same thing, containerised
+VIF_BACKEND=stub PYTHONPATH=src python -m vif.cli serve   # API on :8000, no weights needed
+VIF_BACKEND=stub docker compose up --build      # same thing, containerised
 ```
 
 ---
@@ -53,13 +53,27 @@ failure modes degrade the verdict, never the call.
 | `GET /v1/audit` | Read the log and verify the hash chain |
 | `GET /health`, `/metrics` | Status, model version, device, latency percentiles |
 
-Set `VIF_API_TOKEN` to require `Authorization: Bearer <token>`. Leave it unset
-for a local demo.
+Set `VIF_API_TOKEN` to require `Authorization: Bearer <token>` on session,
+enrolment, verdict, audit and metrics. Leave it unset for a local demo. The
+stream socket is authorised by its unguessable `session_id` alone - browsers
+cannot set headers on a WebSocket - which is why `/metrics`, the one place that
+lists session ids, sits behind the token. `/health` and `/v1/verdict/verify`
+stay open.
 
-### Streaming message
+`VIF_BACKEND` defaults to `auto`: trained weights, else an exported ONNX model,
+and it **refuses to start** with neither. It never falls back to the stub on its
+own, because a server scoring with a stand-in would sign verdicts that detect
+nothing. Set `VIF_BACKEND=stub` to run the pipeline without detection.
+
+### Streaming messages
+
+Every socket message is JSON carrying a `type`: `score` while audio flows,
+`verdict` once after the closing text frame (the signed verdict below, with
+`type` added), or `error` for an unknown session.
 
 ```json
 {
+  "type": "score",
   "session_id": "8f3c...",
   "sequence": 12,
   "speech_seconds": 18.2,
@@ -67,10 +81,16 @@ for a local demo.
   "risk": "RED",
   "speaker_similarity": null,
   "speaker_status": "NOT_ENROLLED",
+  "liveness_score": null,
   "inference_ms": 142.0,
-  "model_version": "aasist-codec_robust-e12"
+  "model_version": "aasist-codec_robust-e12",
+  "calibrated": true,
+  "decision": {"risk": "RED", "action": "GATE_ACTION", "reason": "...", "identity_warning": false}
 }
 ```
+
+A `challenge` object (`phrase`, `words`, `issued_ms`) is added once the session
+first crosses amber.
 
 ### Signed verdict
 
@@ -111,7 +131,7 @@ src/vif/
                     session · server · liveness · prosody · challenge
     adapters/       WebRTC (aiortc) · file · synthetic
   crypto/           keys · verdict signing · vault · audit log · cancelable
-tests/              93 tests, every security control with a negative case
+tests/              128 tests, every security control with a negative case
 Dockerfile          single-container backend
 ```
 
@@ -216,9 +236,12 @@ default path stays small. Flip the flag when the need is real.
 | Flag | What it turns on | Why it is off |
 |---|---|---|
 | `model.liveness.enabled` | Conversational liveness (branch D) | Needs both call directions and 10–20 turn transitions before it says anything trustworthy |
-| `model.prosody.enabled` | Prosody features | Language-dependent; needs per-language tuning or it generates false alarms |
 | `security.cancelable_templates` | Revocable, unlinkable voiceprints | Matters once enrolments are long-lived; a voiceprint is irrevocable |
 | `security.merkle_checkpoints` | Signed Merkle roots over the audit log | The hash chain alone already detects any edit |
+
+Prosody is the exception: `serve/prosody.py` is an offline ablation and is not
+wired into live sessions, so `model.prosody.enabled` changes nothing yet. It is
+language-dependent and would need per-language tuning before running live.
 
 ## Production roadmap, deliberately not built
 

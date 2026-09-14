@@ -42,7 +42,7 @@ class TrainHistory:
     dev_eer: list[float] = field(default_factory=list)
     dev_tpr: list[float] = field(default_factory=list)
     best_epoch: int = 0
-    best_eer: float = 1.0
+    best_eer: float = float("inf")  # EER is in [0, 1], so epoch one always saves
 
     def save(self, path: str | Path) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -71,6 +71,13 @@ def train_head(
 
     from vif.data.datasets import FeatureDataset, collate_features
     from vif.models.heads import save_checkpoint
+
+    if checkpoint_path is not None:
+        required = {"arch", "feat_dim", "frontend_id", "window_samples", "condition"}
+        missing = required - set(checkpoint_meta or {})
+        if missing:
+            # Fail before training rather than after the first epoch has run.
+            raise ValueError(f"checkpoint_meta is missing {sorted(missing)}")
 
     cfg = train_config or TrainConfig()
     torch.manual_seed(cfg.seed)
@@ -113,6 +120,7 @@ def train_head(
     criterion = torch.nn.CrossEntropyLoss(weight=weights)
     history = TrainHistory()
     patience = 0
+    best_state = None
 
     for epoch in range(cfg.epochs):
         head.train()
@@ -152,6 +160,7 @@ def train_head(
             history.best_eer = metrics.eer
             history.best_epoch = epoch
             patience = 0
+            best_state = {k: v.detach().clone() for k, v in head.state_dict().items()}
             if checkpoint_path is not None:
                 save_checkpoint(
                     head,
@@ -167,6 +176,11 @@ def train_head(
                     "early stop at epoch %d (best epoch %d)", epoch + 1, history.best_epoch + 1
                 )
                 break
+
+    if best_state is not None:
+        # Training runs up to `early_stop_patience` epochs past the best, and the
+        # notebooks calibrate on the returned head - so it must be the saved one.
+        head.load_state_dict(best_state)
 
     history.save(
         Path(checkpoint_path).with_suffix(".history.json") if checkpoint_path else "history.json"

@@ -73,18 +73,21 @@ def det_curve(labels, scores) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     A false alarm is a bonafide caller flagged as synthetic - the error that
     actually gets the system disabled in production.
+
+    Sort-based, O(n log n).  Evaluation sets reach tens of thousands of scores
+    and the eval runner calls this once per condition and once per attack, so
+    a per-threshold scan is not an option.
     """
     labels, scores = _as_arrays(labels, scores)
-    bonafide = scores[labels == 1]
-    spoof = scores[labels == 0]
+    bonafide = np.sort(scores[labels == 1])
+    spoof = np.sort(scores[labels == 0])
     if len(bonafide) == 0 or len(spoof) == 0:
         raise ValueError("both classes must be present to compute a DET curve")
 
-    thresholds = np.sort(np.unique(np.concatenate([bonafide, spoof])))
-    # far: bonafide scored at or above threshold (wrongly called synthetic)
-    far = np.array([(bonafide >= t).mean() for t in thresholds])
-    # frr: spoof scored below threshold (missed)
-    frr = np.array([(spoof < t).mean() for t in thresholds])
+    thresholds = np.unique(np.concatenate([bonafide, spoof]))
+    # searchsorted(side="left") counts the elements strictly below each threshold.
+    far = 1.0 - np.searchsorted(bonafide, thresholds, side="left") / len(bonafide)
+    frr = np.searchsorted(spoof, thresholds, side="left") / len(spoof)
     return far, frr, thresholds
 
 

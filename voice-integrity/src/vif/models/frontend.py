@@ -108,10 +108,10 @@ class SSLFrontend(nn.Module):
     def frames_for(self, n_samples: int) -> int:
         """Number of output frames for an input length.
 
-        wav2vec2's convolutional feature extractor downsamples by 320, giving
+        wav2vec2's convolutional feature extractor has a 400-sample receptive field and a stride of 320, giving
         50 frames per second at 16 kHz.  A 64,600-sample window yields ~201.
         """
-        return max(1, n_samples // 320 - 1)
+        return max(1, (n_samples - 400) // 320 + 1)
 
 
 def load_frontend(
@@ -131,3 +131,28 @@ def load_frontend(
         os.environ.setdefault("HF_HOME", str(cache_dir))
     frontend = SSLFrontend(config)
     return frontend.to(device)
+
+
+def load_released_layers(frontend: SSLFrontend, head_checkpoint: str | Path) -> None:
+    """Restore the transformer layers a fine-tune released.
+
+    `finetune()` trains the top layers together with the head and saves them
+    beside the head checkpoint.  A fine-tuned head served on the stock
+    pretrained layers sees features it was never trained on and degrades with
+    no error, so a missing or mismatched file raises instead.
+    """
+    path = Path(head_checkpoint).with_name("frontend_top_layers.pt")
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{head_checkpoint} is a fine-tuned head, but its front-end layers are not at {path}"
+        )
+    blob = torch.load(path, map_location="cpu", weights_only=False)
+    if blob.get("model_id") != frontend.config.model_id:
+        raise ValueError(
+            f"front-end layers were fine-tuned from {blob.get('model_id')}, "
+            f"but the runtime is configured for {frontend.config.model_id}"
+        )
+    result = frontend.load_state_dict(blob["state_dict"], strict=False)
+    if result.unexpected_keys:
+        raise ValueError(f"front-end layer file has unexpected keys: {result.unexpected_keys[:3]}")
+    log.info("loaded %d released front-end tensors from %s", len(blob["state_dict"]), path)

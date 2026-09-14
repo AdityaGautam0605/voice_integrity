@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "vif"
 version = "0.1.0"
 description = "Voice Integrity Verification Framework - backend"
-requires-python = ">=3.10"
+requires-python = ">=3.11"  # webrtc.py relies on asyncio timeouts being TimeoutError
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -17,8 +17,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-# UP042: str+Enum is deliberate - it keeps JSON round-tripping on 3.10,
-#        where enum.StrEnum does not exist.
+# UP042: str+Enum is deliberate - the enums already serialise as plain strings
+#        through pydantic and JSON, so StrEnum would change nothing but churn.
 # B027:  BaseVAD.reset is an optional hook, not a required override.
 ignore = ["E501", "UP042", "B027"]
 
