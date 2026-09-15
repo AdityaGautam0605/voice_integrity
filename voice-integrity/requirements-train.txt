@@ -1,0 +1,10 @@
+# Install the CUDA build of torch on the training machine.
+torch>=2.4
+torchaudio>=2.4
+transformers>=4.44
+speechbrain>=1.0
+
+# Evaluation and tracking
+matplotlib>=3.9
+pandas>=2.2
+wandb>=0.18

@@ -1,0 +1,17 @@
+services:
+  backend:
+    build: .
+    image: voice-integrity:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # Leave unset for an open local demo; set it before exposing the port.
+      VIF_API_TOKEN: "${VIF_API_TOKEN:-}"
+      VIF_BACKEND: "${VIF_BACKEND:-auto}"
+      VIF_DEVICE: "${VIF_DEVICE:-cpu}"
+    volumes:
+      - ./models:/app/models
+      - ./cache:/app/cache
+      - ./data:/app/data
+      - ./keys:/app/keys
+    restart: unless-stopped

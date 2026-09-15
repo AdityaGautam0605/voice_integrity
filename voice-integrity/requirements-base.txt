@@ -1,0 +1,16 @@
+# Numerics
+numpy>=1.26,<2.0
+scipy>=1.14
+scikit-learn>=1.5
+
+# Audio I/O and DSP
+soundfile>=0.12
+librosa>=0.10
+
+# Config and utilities
+pydantic>=2.9
+pyyaml>=6.0
+tqdm>=4.66
+
+# Cryptography
+cryptography>=43.0

@@ -1,0 +1,23 @@
+version: "policy-1.0.0"
+
+# The score gates the sensitive action.  It never ends the call - a config
+# that tries to is rejected at load.
+actions:
+  green: PROCEED
+  amber: CHALLENGE
+  red: GATE_ACTION
+
+# A missing or unverifiable verdict is elevated risk, not absence of risk.
+fail_closed: true
+challenge_on_amber: true
+identity_warning: true
+
+security:
+  sign_verdicts: true        # Ed25519 over the final verdict
+  api_token: ""              # empty = open; set VIF_API_TOKEN when deployed
+  audit_log: true            # hash-chained record of verdicts
+  encrypt_templates: true    # AES-256-GCM for stored voiceprints
+
+  # Production roadmap, implemented but defaulted off for the prototype.
+  merkle_checkpoints: false  # signed Merkle roots over the audit log
+  cancelable_templates: false  # revocable, unlinkable biometric templates

@@ -1,0 +1,13 @@
+# Inference
+onnx>=1.16
+onnxruntime>=1.19
+
+# Streaming.  aiortc needs system ffmpeg dev libraries: use WSL2 on Windows.
+aiortc>=1.9
+av>=12.0
+fastapi>=0.115
+uvicorn[standard]>=0.30
+websockets>=13.0
+
+# VAD
+silero-vad>=5.1

@@ -1,0 +1,53 @@
+# Fixed audio geometry.  window_samples is NOT a runtime tunable: it must
+# equal the training crop of the detection head, or accuracy degrades with no
+# error to show for it.  A mismatch raises at startup.
+audio:
+  sample_rate: 16000
+  window_samples: 64600      # 4.04 s @ 16 kHz - AASIST's training crop
+  hop_samples: 16000         # 1 s; raise to 32000 on a slow CPU
+  vad_frame: 512
+  vad_threshold: 0.5
+
+frontend:
+  enabled: true              # false runs a raw-waveform detector instead
+  model_id: facebook/wav2vec2-xls-r-300m
+  hidden_dim: 1024
+  frozen: true               # false only for the final fine-tune run
+  unfreeze_top_n: 6
+  layer: -1
+
+head:
+  arch: aasist
+  gat_dims: [64, 32]
+  pool_ratios: [0.5, 0.7, 0.5, 0.5]
+  temperatures: [2.0, 2.0, 100.0, 100.0]
+  checkpoint: models/checkpoints/codec_robust.pt
+  baseline_checkpoint: models/checkpoints/baseline.pt   # NEVER delete
+
+speaker:
+  enabled: true              # independent branch; reported, never fused
+  model_id: speechbrain/spkrec-ecapa-voxceleb
+  embedding_dim: 192
+
+prosody:
+  enabled: false             # reserved: prosody.py is an offline ablation, not wired into sessions
+
+liveness:
+  enabled: false             # needs both directions and 10-20 turns; stretch
+  min_utterance_ms: 250
+  resume_window_ms: 700
+  backchannel_max_ms: 900
+  fast_response_ms: 150
+  min_transitions: 4
+
+# Deterministic bands on an independent spoof probability.  No cross-branch
+# fusion: with one detector and one optional verifier, a combined score would
+# look rigorous without the evidence to justify it, and would hide which
+# branch fired.
+scoring:
+  amber_threshold: 0.50
+  red_threshold: 0.80
+  speaker_threshold: 0.25
+  smoothing_windows: 5       # 1 disables smoothing and reports the raw window
+  logit_scale: 2.0           # only used when no calibration exists
+  calibration: configs/calibration.json
