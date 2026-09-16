@@ -2010,3 +2010,139 @@ button {
     display: none;
   }
 }
+
+/* =========================
+   RISK SPECTRUM
+   ========================= */
+
+.risk-spectrum-card {
+  margin-top: 14px;
+  padding: 22px;
+  background: white;
+  border: 1px solid #dfe7f1;
+  border-radius: 16px;
+  box-shadow: 0 5px 18px rgba(15, 23, 42, 0.04);
+}
+
+.risk-spectrum-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.risk-spectrum-header h2 {
+  margin: 4px 0 0;
+  color: #0f172a;
+  font-size: 18px;
+}
+
+.risk-value {
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.risk-value.green {
+  color: #16a34a;
+}
+
+.risk-value.amber {
+  color: #d97706;
+}
+
+.risk-value.red {
+  color: #dc2626;
+}
+
+.risk-value.waiting,
+.risk-value.unknown {
+  color: #64748b;
+}
+
+/* SCALE */
+
+.risk-spectrum {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40fr 35fr 25fr;
+  height: 72px;
+  margin-top: 22px;
+  border-radius: 10px;
+  overflow: visible;
+}
+
+.risk-zone {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-left: 16px;
+  position: relative;
+}
+
+.risk-zone span {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+}
+
+.risk-zone small {
+  margin-top: 3px;
+  font-size: 8px;
+  font-weight: 700;
+  opacity: 0.75;
+}
+
+.green-zone {
+  background: #dcfce7;
+  color: #15803d;
+  border-radius: 10px 0 0 10px;
+}
+
+.amber-zone {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.red-zone {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-radius: 0 10px 10px 0;
+}
+
+/* MARKER */
+
+.risk-marker {
+  position: absolute;
+  top: -12px;
+  transform: translateX(-50%);
+  height: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+.risk-marker-line {
+  width: 3px;
+  flex: 1;
+  background: #0f172a;
+  border-radius: 3px;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.7);
+}
+
+.risk-marker span {
+  margin-top: 5px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: #0f172a;
+  color: white;
+  font-size: 8px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.risk-spectrum-caption {
+  margin-top: 17px;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.5;
+}

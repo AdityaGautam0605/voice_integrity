@@ -417,38 +417,61 @@ if (analyserRef.current) {
 
       </div>
 
-      {/* PROCESSING SUMMARY */}
-      <div className="verdict-analysis-card">
+      {/* RISK SPECTRUM */}
+<div className="risk-spectrum-card">
 
-        <div className="analysis-card-header">
-          <div>
-            <div className="section-label">ANALYSIS COVERAGE</div>
-            <h2>Processing Summary</h2>
-          </div>
+  <div className="risk-spectrum-header">
+    <div>
+      <div className="section-label">RISK ASSESSMENT</div>
+      <h2>Synthetic Speech Risk</h2>
+    </div>
 
-          <div className="windows-badge">
-            {final?.windows_scored ?? 0} windows scored
-          </div>
-        </div>
+    <div className={`risk-value ${riskClass}`}>
+      {final?.spoof_probability != null
+        ? `${Math.round(final.spoof_probability * 100)}%`
+        : "—"}
+    </div>
+  </div>
 
-        <div className="coverage-bar">
-          <div
-            className={`coverage-fill ${riskClass}`}
-            style={{
-              width: final?.spoof_probability != null
-                ? `${Math.max(8, Math.min(100, final.spoof_probability * 100))}%`
-                : "0%",
-            }}
-          ></div>
-        </div>
+  <div className="risk-spectrum">
 
-        <div className="coverage-scale">
-          <span>LOW RISK</span>
-          <span>ANALYSIS COMPLETE</span>
-          <span>HIGH RISK</span>
-        </div>
+    <div className="risk-zone green-zone">
+      <span>LOW</span>
+      <small>0–40</small>
+    </div>
 
+    <div className="risk-zone amber-zone">
+      <span>ELEVATED</span>
+      <small>40–75</small>
+    </div>
+
+    <div className="risk-zone red-zone">
+      <span>HIGH</span>
+      <small>75–100</small>
+    </div>
+
+    {final?.spoof_probability != null && (
+      <div
+        className="risk-marker"
+        style={{
+          left: `${Math.min(
+            100,
+            Math.max(0, final.spoof_probability * 100)
+          )}%`,
+        }}
+      >
+        <div className="risk-marker-line"></div>
+        <span>You are here</span>
       </div>
+    )}
+
+  </div>
+
+  <div className="risk-spectrum-caption">
+    Synthetic-speech probability compared with the configured response thresholds.
+  </div>
+
+</div>
 
       {/* MODEL + SECURITY */}
       <div className="verdict-two-column">
@@ -466,43 +489,30 @@ if (analyserRef.current) {
             <span>Policy Version</span>
             <strong>{final?.policy_version || "—"}</strong>
           </div>
-
-          <div className="detail-row">
-            <span>Session ID</span>
-            <strong className="session-value">
-              {final?.session_id || "—"}
-            </strong>
-          </div>
         </div>
 
         <div className="verdict-detail-card security-card">
 
-          <div className="section-label">SECURITY</div>
-          <h2>Signed Verdict</h2>
+  <div className="section-label">SECURITY</div>
+  <h2>Signed Verdict</h2>
 
-          <div className="signature-status">
-            <div className="signature-check">✓</div>
+  <div className="signature-status">
+    <div className="signature-check">✓</div>
 
-            <div>
-              <strong>
-                {verdict?.signature
-                  ? "Cryptographic signature attached"
-                  : "Signature unavailable"}
-              </strong>
+    <div>
+      <strong>
+        {verdict?.signature
+          ? "Cryptographic signature attached"
+          : "Signature unavailable"}
+      </strong>
 
-              <span>
-                {verdict?.algorithm || "—"} verification
-              </span>
-            </div>
-          </div>
+      <span>
+        {verdict?.algorithm || "—"} signed assessment
+      </span>
+    </div>
+  </div>
 
-          <div className="signature-key">
-            <span>Key ID</span>
-            <strong>{verdict?.key_id || "—"}</strong>
-          </div>
-
-        </div>
-
+</div>
       </div>
 
       {/* FOOTER */}
