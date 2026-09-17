@@ -3,12 +3,13 @@
 Backend for near-real-time detection of cloned and synthetic speech on live
 calls. SIH 26104.
 
-**Frontend is out of scope for this repository.** The system exposes contracts;
-presentation consumes them.
+The React frontend in the parent directory includes a two-device call demo.
+See [the demo guide](../README_frontend.md) for laptop + Android setup.
+The backend exposes contracts; presentation consumes them.
 
 ```bash
 PYTHONPATH=src python scripts/smoke_test.py     # end-to-end, no downloads needed
-PYTHONPATH=src python -m pytest tests/ -q       # 128 tests
+PYTHONPATH=src python -m pytest tests/ -q       # optional dependencies may skip tests
 PYTHONPATH=src python -m vif.cli check          # startup guards and preflight
 VIF_BACKEND=stub PYTHONPATH=src python -m vif.cli serve   # API on :8000, no weights needed
 VIF_BACKEND=stub docker compose up --build      # same thing, containerised
