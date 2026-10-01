@@ -91,3 +91,15 @@ runs/
 
 .DS_Store
 Thumbs.db
+
+# Local demo certificates, test output
+.certs/
+playwright-report/
+test-results/
+
+# Online deployment secrets and generated assets
+.env.online
+.env.tunnel
+deploy/online/.env
+deploy/online/runtime/
+deploy/online/static/

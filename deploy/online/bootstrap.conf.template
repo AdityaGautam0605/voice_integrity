@@ -1,0 +1,15 @@
+worker_processes auto;
+pid /tmp/nginx.pid;
+error_log /dev/stderr warn;
+events { worker_connections 128; }
+http {
+    access_log off;
+    server_tokens off;
+    server { listen 80 default_server; server_name _; return 444; }
+    server {
+        listen 80;
+        server_name @DEMO_HOST@ @TURN_HOST@;
+        location ^~ /.well-known/acme-challenge/ { root /var/www/acme; }
+        location / { return 503; }
+    }
+}

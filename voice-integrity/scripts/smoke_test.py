@@ -327,9 +327,11 @@ async def main() -> int:
         print("\n11. Teardown")
         session.close()
         passed &= check("buffers zeroed at teardown", len(session.buffer) == 0, "no audio retained")
-        audio_files = list(Path(".").glob("**/*.wav")) + list(Path(".").glob("**/*.flac"))
+        # Only inspect this run's output directory. Dependencies and downloaded
+        # corpora may legitimately contain audio fixtures outside it.
+        audio_files = list(Path(workdir).glob("**/*.wav")) + list(Path(workdir).glob("**/*.flac"))
         passed &= check(
-            "no audio written to disk during the run",
+            "no audio written to the run's output directory",
             len(audio_files) == 0,
             f"{len(audio_files)} audio files found",
         )

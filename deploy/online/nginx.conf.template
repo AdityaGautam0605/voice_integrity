@@ -1,0 +1,61 @@
+worker_processes auto;
+pid /tmp/nginx.pid;
+error_log /dev/stderr warn;
+events { worker_connections 1024; }
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    server_tokens off;
+    # Deliberately omit query strings, cookies and authorization headers.
+    log_format demo '$remote_addr [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent';
+    access_log /dev/stdout demo;
+    map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+    limit_req_zone $binary_remote_addr zone=api:10m rate=20r/s;
+    limit_conn_zone $binary_remote_addr zone=connections:10m;
+    server { listen 80 default_server; server_name _; return 444; }
+    server {
+        listen 80;
+        server_name @DEMO_HOST@ @TURN_HOST@;
+        location ^~ /.well-known/acme-challenge/ { root /var/www/acme; }
+        location / { return 301 https://@DEMO_HOST@$request_uri; }
+    }
+    server { listen 443 ssl default_server; ssl_reject_handshake on; server_name _; return 444; }
+    server {
+        listen 443 ssl;
+        server_name @DEMO_HOST@;
+        ssl_certificate /etc/voice-integrity/tls/fullchain.pem;
+        ssl_certificate_key /etc/voice-integrity/tls/privkey.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_session_cache shared:TLS:10m;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header Permissions-Policy 'camera=(), microphone=(self)' always;
+        add_header X-Frame-Options DENY always;
+        client_max_body_size 1m;
+        root /srv/www;
+        location ^~ /api/ {
+            limit_req zone=api burst=40 nodelay;
+            limit_conn connections 20;
+            proxy_pass http://127.0.0.1:18000/;
+            proxy_http_version 1.1;
+            proxy_set_header Host @DEMO_HOST@;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header Forwarded "";
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+            proxy_connect_timeout 5s;
+            proxy_buffering off;
+            add_header Cache-Control no-store always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header Referrer-Policy no-referrer always;
+        }
+        location ~ /\. { return 404; }
+        location ~* \.(?:pem|key|p12|crt|env|py|sqlite|db)$ { return 404; }
+        location /assets/ { try_files $uri =404; expires 1h; }
+        location / { try_files $uri $uri/ /index.html; expires -1; }
+    }
+}

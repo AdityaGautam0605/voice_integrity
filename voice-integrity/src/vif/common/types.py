@@ -159,3 +159,5 @@ class SessionInfo(BaseModel):
     sample_rate: int = 16000
     window_samples: int = 64600
     hop_samples: int = 16000
+    demo_mode: bool = False
+    vad: str = "unknown"

@@ -205,6 +205,25 @@ class StubDetector(BaseDetector):
         return vec / (np.linalg.norm(vec) + 1e-9)
 
 
+class RehearsalDetector(StubDetector):
+    """Explicit per-session policy exercise, identifiable in signed verdicts."""
+
+    def __init__(self, scenario, scoring):
+        from vif.serve.scoring import logit
+
+        probabilities = {
+            "GREEN": scoring.amber_threshold / 2,
+            "AMBER": (scoring.amber_threshold + scoring.red_threshold) / 2,
+            "RED": (1 + scoring.red_threshold) / 2,
+        }
+        self.raw_score = logit(probabilities[scenario]) * scoring.logit_scale
+        self.model_version = f"stub-rehearsal-{scenario.lower()}-1"
+        self.model_checksum = "simulation"
+
+    def score_window(self, wav: np.ndarray) -> float:
+        return self.raw_score
+
+
 def _load_speaker_model(model_id: str, device: str):
     try:
         from speechbrain.inference import EncoderClassifier

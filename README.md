@@ -12,7 +12,15 @@ Detecting cloned and synthetic speech on live calls, in near real time.
 | [`SIH26104-implementation.md`](SIH26104-implementation.md) | Environment setup, dependencies, build order, gotchas |
 | `diagram-*.png`, `architecture-full.png` | Rendered architecture diagrams for slides |
 
-## Quick start
+## Two-device demo
+
+Start with [README_frontend.md](README_frontend.md) for laptop + Android setup. The demo works without trained models: `./scripts/demo.sh --http` starts laptop-only development; trusted local HTTPS enables the phone.
+
+For devices on different networks, follow [the online deployment guide](docs/ONLINE_DEMO.md), then start the laptop with `./scripts/demo.sh --online`.
+
+For a laptop-hosted demo without a VPS, use [the tunnel guide](docs/TUNNEL_DEMO.md) and `./scripts/demo.sh --tunnel`.
+
+## Backend quick start
 
 ```bash
 cd voice-integrity
@@ -20,7 +28,7 @@ uv venv --python 3.11 && source .venv/bin/activate
 uv pip install -r requirements-base.txt -r requirements-serve.txt -r requirements-dev.txt
 
 PYTHONPATH=src python scripts/smoke_test.py    # end to end, no downloads
-PYTHONPATH=src python -m pytest tests/ -q      # 128 tests
+PYTHONPATH=src python -m pytest tests/ -q      # optional dependencies may skip tests
 ```
 
 The smoke test exercises every layer using a stub detector and synthetic
@@ -31,11 +39,11 @@ weights exist.
 
 | | |
 |---|---|
-| Backend | complete, 128 tests passing |
+| Backend | streaming pipeline, signing/audit and two-party signaling implemented |
 | Training notebooks | written, not yet run |
 | Model weights | not trained yet |
 | Corpora | not downloaded yet |
-| Frontend | out of scope for this repository |
+| Frontend | two-device browser call, stub analysis, policy rehearsal and verdict/audit UI |
 
 Training runs on Colab from `voice-integrity/notebooks/`, in numbered order.
 

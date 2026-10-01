@@ -29,6 +29,7 @@ text frames are control messages.
 # query parameter.
 
 import asyncio
+import contextlib
 import os
 import time
 import uuid
@@ -42,7 +43,9 @@ from vif.common.config import AppConfig, load_config
 from vif.common.logging import get_logger
 from vif.common.types import SessionInfo, Side, Verdict
 from vif.serve.adapters.base import AudioFrame, now_ns
-from vif.serve.detector import DEFAULT_ONNX_PATH, BaseDetector, build_detector
+from vif.serve.calls import register_call_routes
+from vif.serve.detector import DEFAULT_ONNX_PATH, BaseDetector, StubDetector, build_detector
+from vif.serve.online import register_online_routes
 from vif.serve.session import CallSession
 from vif.serve.vad import SileroVAD, build_vad
 
@@ -109,7 +112,7 @@ def bootstrap(
     state.calibrator = Calibrator.load(state.config.path(state.config.model.scoring.calibration))
     # Probe the VAD once, here, where blocking is harmless.  Sessions then build
     # the kind that works instead of each retrying the neural model mid-call.
-    state.vad_kind = "silero" if isinstance(build_vad("auto"), SileroVAD) else "energy"
+    state.vad_kind = "silero" if isinstance(build_vad(os.environ.get("VIF_VAD", "auto")), SileroVAD) else "energy"
 
     security = state.config.security
 
@@ -155,8 +158,18 @@ async def lifespan(app):  # pragma: no cover - exercised by uvicorn
         config_dir=os.environ.get("VIF_CONFIG", "configs"),
         backend=os.environ.get("VIF_BACKEND", "auto"),
         device=os.environ.get("VIF_DEVICE", "cpu"),
+        keys_dir=os.environ.get("VIF_KEYS_DIR", "keys"),
+        data_dir=os.environ.get("VIF_DATA_DIR", "data"),
     )
-    yield
+    sweeper = asyncio.create_task(app.state.call_rooms.sweep())
+    try:
+        yield
+    finally:
+        sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweeper
+        await app.state.call_rooms.close()
+        app.state.online_access.sessions.clear()
     for session in list(state.sessions.values()):
         session.close()
     if state.vault is not None:
@@ -193,6 +206,15 @@ def create_app():
     from pydantic import BaseModel
 
     app = FastAPI(title="Voice Integrity Verification", version="0.1.0", lifespan=lifespan)
+    app.state.online_access = access = register_online_routes(app)
+
+    def require_token(authorization):
+        # OnlineMiddleware has already checked the operator cookie. Never
+        # substitute the legacy shared bearer token for online authentication.
+        if not access.config.enabled:
+            _require_token(authorization)
+
+    app.state.call_rooms = register_call_routes(app, require_token, access.config)
 
     # -- health and metrics ------------------------------------------------
 
@@ -201,9 +223,18 @@ def create_app():
         recent = list(state.latency_ms)[-200:]
         return {
             "status": "ok",
+            "online_mode": access.config.enabled,
+            "public_origin": access.config.public_origin,
             "model_version": state.detector.model_version,
             "model_checksum": state.detector.model_checksum,
             "device": state.device,
+            "vad": state.vad_kind,
+            "demo_mode": isinstance(state.detector, StubDetector),
+            "demo_scenarios": _demo_scenarios_enabled(),
+            "thresholds": {
+                "amber": state.config.model.scoring.amber_threshold,
+                "red": state.config.model.scoring.red_threshold,
+            },
             "active_sessions": len(state.sessions),
             "uptime_s": round(time.time() - state.started_at, 1),
             "inference_ms_mean": round(float(np.mean(recent)), 1) if recent else None,
@@ -216,7 +247,7 @@ def create_app():
     async def metrics(authorization: str | None = Header(default=None)):
         # Behind the token: it lists live session ids, and an id is all the
         # streaming socket asks for.
-        _require_token(authorization)
+        require_token(authorization)
         return {
             "active_sessions": len(state.sessions),
             "verdicts_issued": len(state.verdicts),
@@ -228,6 +259,7 @@ def create_app():
 
     class CreateSession(BaseModel):
         speaker_id: str | None = None
+        demo_scenario: str | None = None
 
     @app.post("/v1/session", response_model=SessionInfo)
     async def create_session(
@@ -235,10 +267,21 @@ def create_app():
         authorization: str | None = Header(default=None),
     ):
         """Open an analysis session and report the audio geometry to send."""
-        _require_token(authorization)
+        require_token(authorization)
         _prune_idle_sessions()
         session_id = str(uuid.uuid4())
         audio = state.config.model.audio
+        detector = state.detector
+        calibrator = state.calibrator
+        if body and body.demo_scenario:
+            if body.demo_scenario not in ("GREEN", "AMBER", "RED"):
+                raise HTTPException(422, "Unknown demo scenario")
+            if not _demo_scenarios_enabled():
+                raise HTTPException(403, "Policy rehearsals require an explicitly enabled stub backend")
+            from vif.serve.detector import RehearsalDetector
+
+            detector = RehearsalDetector(body.demo_scenario, state.config.model.scoring)
+            calibrator = None  # Calibration from a real model does not apply to simulations.
 
         # Off the event loop: even loading the packaged model would stall every
         # live stream for as long as it takes.
@@ -246,19 +289,21 @@ def create_app():
         state.sessions[session_id] = CallSession(
             session_id=session_id,
             config=state.config,
-            detector=state.detector,
+            detector=detector,
             vad=vad,
-            calibrator=state.calibrator,
+            calibrator=calibrator,
             speaker_id=(body.speaker_id if body else None),
             vault=state.vault,
         )
         return SessionInfo(
             session_id=session_id,
-            model_version=state.detector.model_version,
+            model_version=detector.model_version,
             device=state.device,
             sample_rate=audio.sample_rate,
             window_samples=audio.window_samples,
             hop_samples=audio.hop_samples,
+            demo_mode=isinstance(detector, StubDetector),
+            vad=state.vad_kind,
         )
 
     # -- streaming ---------------------------------------------------------
@@ -277,11 +322,29 @@ def create_app():
             await ws.close(code=1008)
             return
 
+        if getattr(session, "stream_owned", False):
+            await ws.send_json({"type": "error", "detail": "Session already has an audio stream"})
+            await ws.close(code=1008)
+            return
+        session.stream_owned = True
+
         async def emit(payload: dict) -> None:
             state.latency_ms.append(payload.get("inference_ms", 0.0))
             await ws.send_json(payload)
 
         session.on_message = emit
+
+        async def progress() -> None:
+            while True:
+                await asyncio.sleep(1)
+                await ws.send_json({
+                    "type": "progress", "session_id": session_id,
+                    "speech_seconds": round(session.buffer.speech_seconds(
+                        state.config.model.audio.sample_rate), 2),
+                    **session.stats.as_dict(),
+                })
+
+        reporter = asyncio.create_task(progress())
 
         try:
             while True:
@@ -309,6 +372,9 @@ def create_app():
         except Exception as exc:  # noqa: BLE001
             log.exception("stream error on session %s: %s", session_id, exc)
         finally:
+            reporter.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await reporter
             # Teardown runs on EVERY exit path.  This is where the privacy
             # claim is actually implemented.
             verdict = await _teardown(session)
@@ -332,7 +398,7 @@ def create_app():
         authorization: str | None = Header(default=None),
     ):
         """Register a reference identity for the speaker branch."""
-        _require_token(authorization)
+        require_token(authorization)
         if state.vault is None:
             raise HTTPException(status_code=503, detail="speaker branch is disabled")
 
@@ -356,7 +422,7 @@ def create_app():
         speaker_id: str,
         authorization: str | None = Header(default=None),
     ):
-        _require_token(authorization)
+        require_token(authorization)
         if state.vault is None:
             raise HTTPException(status_code=503, detail="speaker branch is disabled")
         state.vault.revoke(speaker_id)
@@ -366,7 +432,7 @@ def create_app():
 
     @app.get("/v1/verdict/{session_id}")
     async def get_verdict(session_id: str, authorization: str | None = Header(default=None)):
-        _require_token(authorization)
+        require_token(authorization)
         verdict = state.verdicts.get(session_id)
         if verdict is None:
             # Fail closed: absence is not evidence of safety.
@@ -391,7 +457,7 @@ def create_app():
 
     @app.get("/v1/audit")
     async def audit(limit: int = 50, authorization: str | None = Header(default=None)):
-        _require_token(authorization)
+        require_token(authorization)
         if state.audit is None:
             raise HTTPException(status_code=503, detail="audit log is disabled")
         ok, reason = state.audit.verify_chain()
@@ -408,6 +474,10 @@ def create_app():
 IDLE_SESSION_TTL_S = 600
 
 
+def _demo_scenarios_enabled() -> bool:
+    return isinstance(state.detector, StubDetector) and os.environ.get("VIF_DEMO_SCENARIOS") == "1"
+
+
 def _prune_idle_sessions() -> None:
     """Drop sessions that were opened but never streamed.
 
@@ -418,7 +488,7 @@ def _prune_idle_sessions() -> None:
     now = time.monotonic_ns()
     for session_id, session in list(state.sessions.items()):
         idle_s = (now - session.started_ns) / 1e9
-        if session.stats.frames_ingested == 0 and idle_s > IDLE_SESSION_TTL_S:
+        if not getattr(session, "stream_owned", False) and session.stats.frames_ingested == 0 and idle_s > IDLE_SESSION_TTL_S:
             session.close()
             state.sessions.pop(session_id, None)
 
@@ -465,4 +535,9 @@ async def _teardown(session: CallSession) -> Verdict | None:
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:  # pragma: no cover  # noqa: S104
     import uvicorn
 
-    uvicorn.run(create_app(), host=host, port=port, log_level="info")
+    app = create_app()
+    directory = os.environ.get("VIF_FRONTEND_DIST")
+    if directory:
+        from vif.serve.site import DemoSite
+        app = DemoSite(app, directory)
+    uvicorn.run(app, host=host, port=port, log_level="info", access_log=not bool(directory))

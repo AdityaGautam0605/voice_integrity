@@ -1,42 +1,34 @@
-const WS_BASE = "ws://localhost:5173/api";
+export function socketUrl(path) {
+  const url = new URL(`/api${path}`, window.location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.href;
+}
 
 export function connectToStream(sessionId, onMessage, onError, onClose) {
-  const socket = new WebSocket(`${WS_BASE}/v1/stream/${sessionId}`);
-
-  socket.binaryType = "arraybuffer";
-
-  socket.onopen = () => {
-    console.log("WebSocket connected");
-  };
+  const socket = new WebSocket(socketUrl(`/v1/stream/${encodeURIComponent(sessionId)}`));
+  socket.binaryType = 'arraybuffer';
 
   socket.onmessage = (event) => {
+    let data;
     try {
-      const data = JSON.parse(event.data);
-      console.log("Backend message:", data);
-
-      if (onMessage) {
-        onMessage(data);
-      }
+      data = JSON.parse(event.data);
     } catch (error) {
-      console.error("Invalid backend message:", error);
+      onError?.(error);
+      return;
     }
+    onMessage?.(data);
   };
-
-  socket.onerror = (error) => {
-    console.error("WebSocket error:", error);
-
-    if (onError) {
-      onError(error);
-    }
-  };
-
-  socket.onclose = () => {
-    console.log("WebSocket closed");
-
-    if (onClose) {
-      onClose();
-    }
-  };
+  socket.onerror = (event) => onError?.(event);
+  socket.onclose = (event) => onClose?.(event);
 
   return socket;
+}
+
+export function opened(socket) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => { socket.close(); reject(new Error('Connection timed out')); }, 10000);
+    socket.addEventListener('open', () => { clearTimeout(timeout); resolve(); }, { once: true });
+    socket.addEventListener('error', () => { clearTimeout(timeout); reject(new Error('Connection failed')); }, { once: true });
+    socket.addEventListener('close', () => { clearTimeout(timeout); reject(new Error('Connection closed')); }, { once: true });
+  });
 }
