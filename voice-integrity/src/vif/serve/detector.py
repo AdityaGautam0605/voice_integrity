@@ -238,6 +238,15 @@ def _load_speaker_model(model_id: str, device: str):
         return None
 
 
+class UnavailableDetector(BaseDetector):
+    """Explicitly disable detection while the API is deployed without weights."""
+
+    model_version = "unavailable"
+
+    def score_window(self, wav: np.ndarray) -> float:
+        raise RuntimeError("Detection model unavailable")
+
+
 DEFAULT_ONNX_PATH = "models/exported/detector-int8.onnx"
 
 
@@ -257,6 +266,8 @@ def build_detector(
     """
     onnx_path = Path(onnx_path or DEFAULT_ONNX_PATH)
 
+    if backend == "disabled":
+        return UnavailableDetector()
     if backend == "stub":
         log.warning("using StubDetector - no real detection is happening")
         return StubDetector(config.audio.window_samples)

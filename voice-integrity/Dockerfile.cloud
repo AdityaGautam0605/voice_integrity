@@ -1,0 +1,19 @@
+# API image for deployment before model training. Build from voice-integrity/.
+FROM python:3.11-slim
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/src \
+    VIF_BACKEND=disabled \
+    VIF_VAD=energy \
+    VIF_DEMO_SCENARIOS=0 \
+    VIF_ONLINE=1 \
+    VIF_KEYS_DIR=/var/lib/vif/keys \
+    VIF_DATA_DIR=/var/lib/vif/data
+COPY requirements-demo.txt ./
+RUN pip install --no-cache-dir -r requirements-demo.txt
+COPY configs/ ./configs/
+COPY src/ ./src/
+COPY scripts/serve_cloud.py ./scripts/serve_cloud.py
+EXPOSE 8000
+CMD ["python", "scripts/serve_cloud.py"]

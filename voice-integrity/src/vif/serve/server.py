@@ -44,7 +44,7 @@ from vif.common.logging import get_logger
 from vif.common.types import SessionInfo, Side, Verdict
 from vif.serve.adapters.base import AudioFrame, now_ns
 from vif.serve.calls import register_call_routes
-from vif.serve.detector import DEFAULT_ONNX_PATH, BaseDetector, StubDetector, build_detector
+from vif.serve.detector import DEFAULT_ONNX_PATH, BaseDetector, StubDetector, UnavailableDetector, build_detector
 from vif.serve.online import register_online_routes
 from vif.serve.session import CallSession
 from vif.serve.vad import SileroVAD, build_vad
@@ -230,6 +230,7 @@ def create_app():
             "device": state.device,
             "vad": state.vad_kind,
             "demo_mode": isinstance(state.detector, StubDetector),
+            "detection_available": not isinstance(state.detector, UnavailableDetector),
             "demo_scenarios": _demo_scenarios_enabled(),
             "thresholds": {
                 "amber": state.config.model.scoring.amber_threshold,
@@ -269,6 +270,8 @@ def create_app():
         """Open an analysis session and report the audio geometry to send."""
         require_token(authorization)
         _prune_idle_sessions()
+        if isinstance(state.detector, UnavailableDetector):
+            raise HTTPException(503, "Detection model unavailable. Deploy trained model weights to enable analysis.")
         session_id = str(uuid.uuid4())
         audio = state.config.model.audio
         detector = state.detector

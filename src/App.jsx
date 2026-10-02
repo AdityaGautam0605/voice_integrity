@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
-import { createSession, getVerdict, getAudit } from "./services/api";
+import { createSession, getVerdict, getAudit, checkOperator, loginOperator } from "./services/api";
 import { connectToStream } from "./services/websocket";
 
 function App() {
   const [activePage, setActivePage] = useState("Dashboard");
+  const [operator, setOperator] = useState(null);
+  const [operatorCode, setOperatorCode] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authAttempt, setAuthAttempt] = useState(0);
   const [sessionId, setSessionId] = useState(null);
   const [socket, setSocket] = useState(null);
   const [micStream, setMicStream] = useState(null);
@@ -27,7 +32,43 @@ function App() {
 );
 
 useEffect(() => {
-  if (activePage !== "Audit") return;
+  let cancelled = false;
+  const requireSignIn = () => {
+    setOperator({ online_mode: true, authenticated: false });
+    setAuthError("Your operator session expired. Enter the current operator code.");
+  };
+  window.addEventListener("vif:operator-auth-required", requireSignIn);
+  checkOperator().then((status) => {
+    if (!cancelled) { setOperator(status); setAuthError(""); }
+  }).catch((error) => {
+    if (!cancelled) setAuthError(error.message || "Unable to reach the backend.");
+  });
+  return () => {
+    cancelled = true;
+    window.removeEventListener("vif:operator-auth-required", requireSignIn);
+  };
+}, [authAttempt]);
+
+async function signIn(event) {
+  event.preventDefault();
+  setAuthBusy(true);
+  setAuthError("");
+  try {
+    await loginOperator(operatorCode.trim());
+    const status = await checkOperator();
+    if (!status.authenticated) throw new Error("Sign-in cookie was not accepted. Open the current public demo URL and try again.");
+    setOperator(status);
+    setOperatorCode("");
+    setBackendError("");
+  } catch (error) {
+    setAuthError(error.message || "Unable to sign in.");
+  } finally {
+    setAuthBusy(false);
+  }
+}
+
+useEffect(() => {
+  if (activePage !== "Audit" || !operator || (operator.online_mode && !operator.authenticated)) return;
 
   setAudit(null);
   setAuditError("");
@@ -41,7 +82,7 @@ useEffect(() => {
       console.error("AUDIT ERROR:", error);
       setAuditError(error.message || "Unable to load audit trail.");
     });
-}, [activePage]);
+}, [activePage, operator]);
 
   const pages = ["Dashboard", "Live Call", "Verdict", "Audit"];
 
@@ -246,6 +287,7 @@ if (analyserRef.current) {
    if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send("end");
   }
+
 }}
           >
             End Call
@@ -1198,7 +1240,26 @@ setActivePage("Live Call");
       </aside>
 
       <main className="main-content">
-        {renderPage()}
+        {!operator ? <section className="card operator-access" aria-live="polite">
+          <h1>Connecting to backend</h1>
+          {authError ? <>
+            <p className="operator-error" role="alert">{authError}</p>
+            <button className="primary-button" onClick={() => { setAuthError(""); setAuthAttempt((attempt) => attempt + 1); }}>Retry connection</button>
+          </> : <p>Checking operator access…</p>}
+        </section> : operator.online_mode && !operator.authenticated ? <section className="card operator-access">
+          <div className="card-label">OPERATOR ACCESS</div>
+          <h1>Sign in</h1>
+          <p>Enter the operator access code printed by the running demo launcher.</p>
+          <form onSubmit={signIn}>
+            <label htmlFor="operator-code">Operator code</label>
+            <input id="operator-code" type="password" autoComplete="current-password" required maxLength={256}
+              value={operatorCode} onChange={(event) => setOperatorCode(event.target.value)} disabled={authBusy} />
+            {authError && <p className="operator-error" role="alert">{authError}</p>}
+            <button className="primary-button" type="submit" disabled={authBusy || !operatorCode.trim()}>
+              {authBusy ? "Signing in…" : "Sign in"}
+            </button>
+          </form>
+        </section> : renderPage()}
       </main>
       {showGateWarning && (
   <div className="gate-overlay">
@@ -1267,4 +1328,3 @@ setActivePage("Live Call");
 }
 
 export default App;
-

@@ -32,6 +32,25 @@ button {
 
 /* SIDEBAR */
 
+.operator-access {
+  max-width: 520px;
+  margin: 40px auto;
+}
+
+.operator-access h1 { margin: 12px 0; }
+.operator-access p { margin: 12px 0 20px; line-height: 1.5; }
+.operator-access form { display: grid; gap: 16px; }
+.operator-access input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #94a3b8;
+  border-radius: 8px;
+  font: inherit;
+}
+.operator-access input:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.operator-access .operator-error { color: #b91c1c; }
+.operator-access button:disabled { opacity: 0.6; cursor: wait; }
+
 .sidebar {
   width: 250px;
   min-height: 100vh;
