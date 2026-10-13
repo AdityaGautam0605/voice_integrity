@@ -1,5 +1,7 @@
 # Two-device voice demo
 
+For the current UI, Windows launch commands, enrollment, and audit workflows, see [Workspace guide](docs/WORKSPACE.md). The operator calling screen is at `/call`.
+
 A laptop operator and Android caller talk in Chrome over local Wi-Fi. WebRTC carries audio directly between browsers. The laptop sends a copy of the **received caller track** to the analysis backend; the operator microphone is not scored. The detector is replaceable, so the whole transport, policy, signing and audit flow works before model training.
 
 ## Setup

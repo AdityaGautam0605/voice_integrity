@@ -1,1330 +1,1584 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  checkBackend,
+  checkOperator,
+  loginOperator,
+  getAudit,
+  verifyVerdict,
+} from "./services/api";
+import { AnalysisClient } from "./services/analysis";
 import "./App.css";
-import { createSession, getVerdict, getAudit, checkOperator, loginOperator } from "./services/api";
-import { connectToStream } from "./services/websocket";
+import CallWorkspace from "./CallWorkspace";
+import Enrollment from "./Enrollment";
+
+const pages = ["Dashboard", "Live Call", "Verdict", "Audit"];
+const percent = (value) =>
+  value == null ? "—" : `${Math.round(value * 100)}%`;
+const readable = (value) =>
+  value
+    ? value
+        .replaceAll("_", " ")
+        .toLowerCase()
+        .replace(/^./, (c) => c.toUpperCase())
+    : "Unavailable";
+const riskName = (risk) =>
+  ({ GREEN: "Low risk", AMBER: "Elevated risk", RED: "High risk" })[risk] ||
+  "Not assessed";
+const date = (value) =>
+  value
+    ? new Date(value).toLocaleString([], {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "Time unavailable";
+const payloadOf = (entry) => entry.payload?.payload || {};
+
+function Icon({ name = "wave", size = 20 }) {
+  const paths = {
+    wave: (
+      <>
+        <path d="M3 10v4m4-8v12m5-16v20m5-16v12m4-8v4" />
+      </>
+    ),
+    plus: <path d="M12 5v14M5 12h14" />,
+    arrow: <path d="m9 5 7 7-7 7" />,
+    shield: (
+      <>
+        <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z" />
+        <path d="m8 12 3 3 5-6" />
+      </>
+    ),
+    user: (
+      <>
+        <circle cx="12" cy="8" r="4" />
+        <path d="M5 21v-2a7 7 0 0 1 14 0v2z" />
+      </>
+    ),
+    clock: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 2" />
+      </>
+    ),
+    check: <path d="m5 12 4 4L19 6" />,
+    search: (
+      <>
+        <circle cx="10" cy="10" r="6" />
+        <path d="m15 15 5 5" />
+      </>
+    ),
+    file: (
+      <>
+        <path d="M5 3h9l5 5v13H5zM14 3v6h5M9 13h6m-6 4h6" />
+      </>
+    ),
+    mic: (
+      <>
+        <rect x="9" y="2" width="6" height="13" rx="3" />
+        <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
+      </>
+    ),
+    stop: <rect x="6" y="6" width="12" height="12" rx="2" />,
+    close: <path d="m6 6 12 12M6 18 18 6" />,
+    grid: (
+      <>
+        <rect x="3" y="3" width="7" height="7" rx="1" />
+        <rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" />
+        <rect x="14" y="14" width="7" height="7" rx="1" />
+      </>
+    ),
+    refresh: (
+      <>
+        <path d="M20 7v5h-5M4 17v-5h5" />
+        <path d="M6 6a8 8 0 0 1 13 2M5 16a8 8 0 0 0 13 2" />
+      </>
+    ),
+  };
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.65"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {paths[name] || paths.wave}
+    </svg>
+  );
+}
+
+function Badge({ risk, children, tone = "" }) {
+  return (
+    <span className={`badge ${risk?.toLowerCase() || tone}`}>
+      <span className="badge-dot" />
+      {children || riskName(risk)}
+    </span>
+  );
+}
+
+function Empty({ icon = "wave", title, children, action }) {
+  return (
+    <div className="empty-state">
+      <span className="empty-icon">
+        <Icon name={icon} size={28} />
+      </span>
+      <h2>{title}</h2>
+      <p>{children}</p>
+      {action}
+    </div>
+  );
+}
+
+function Modal({ title, children, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const dialog = ref.current;
+    dialog.showModal();
+    return () => dialog.close();
+  }, []);
+  return (
+    <dialog
+      ref={ref}
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+      aria-labelledby="modal-title"
+      className="modal"
+    >
+      <button
+        className="icon-button modal-close"
+        aria-label="Close dialog"
+        onClick={onClose}
+      >
+        <Icon name="close" />
+      </button>
+      <div className="modal-heading">
+        <span className="empty-icon">
+          <Icon name="wave" size={28} />
+        </span>
+        <h2 id="modal-title">{title}</h2>
+      </div>
+      {children}
+    </dialog>
+  );
+}
 
 function App() {
-  const [activePage, setActivePage] = useState("Dashboard");
+  const [page, setPage] = useState("Dashboard");
   const [operator, setOperator] = useState(null);
   const [operatorCode, setOperatorCode] = useState("");
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
-  const [authAttempt, setAuthAttempt] = useState(0);
-  const [sessionId, setSessionId] = useState(null);
-  const [socket, setSocket] = useState(null);
-  const [micStream, setMicStream] = useState(null);
-  const [micActive, setMicActive] = useState(false);
-  const audioContextRef = useRef(null);
-  const processorRef = useRef(null);
-  const analyserRef = useRef(null);
-  const animationRef = useRef(null);
-  const [startingCall, setStartingCall] = useState(false);
-  const [backendError, setBackendError] = useState("");
-  const [liveData, setLiveData] = useState(null);
-  const [verdict, setVerdict] = useState(null);
+  const [attempt, setAttempt] = useState(0);
+  const [health, setHealth] = useState(null);
   const [audit, setAudit] = useState(null);
+  const [auditOffset, setAuditOffset] = useState(0);
+  const [auditVersion, setAuditVersion] = useState(0);
   const [auditError, setAuditError] = useState("");
-  const [verificationStarted, setVerificationStarted] = useState(false);
-  const [showGateWarning, setShowGateWarning] = useState(false);
-  const previousActionRef = useRef(null);
-  const [waveformData, setWaveformData] = useState(
-  Array(60).fill(20)
-);
+  const [auditBusy, setAuditBusy] = useState(false);
+  const [query, setQuery] = useState("");
+  const [riskFilter, setRiskFilter] = useState("ALL");
+  const [selected, setSelected] = useState(null);
+  const [session, setSession] = useState(null);
+  const [score, setScore] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [progress, setProgress] = useState(null);
+  const [verdict, setVerdict] = useState(null);
+  const [verificationResult, setVerification] = useState(null);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [analysisState, setAnalysisState] = useState("Ready");
+  const [error, setError] = useState("");
+  const [active, setActive] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [newSession, setNewSession] = useState(false);
+  const [gate, setGate] = useState(false);
+  const [manualCheck, setManualCheck] = useState(false);
+  const [bars, setBars] = useState(Array(56).fill(3));
+  const [elapsed, setElapsed] = useState(0);
+  const audio = useRef(null);
+  const gateShown = useRef(false);
+  const verificationRequest = useRef(0);
 
-useEffect(() => {
-  let cancelled = false;
-  const requireSignIn = () => {
-    setOperator({ online_mode: true, authenticated: false });
-    setAuthError("Your operator session expired. Enter the current operator code.");
-  };
-  window.addEventListener("vif:operator-auth-required", requireSignIn);
-  checkOperator().then((status) => {
-    if (!cancelled) { setOperator(status); setAuthError(""); }
-  }).catch((error) => {
-    if (!cancelled) setAuthError(error.message || "Unable to reach the backend.");
-  });
-  return () => {
-    cancelled = true;
-    window.removeEventListener("vif:operator-auth-required", requireSignIn);
-  };
-}, [authAttempt]);
+  useEffect(() => {
+    let cancelled = false;
+    const requireSignIn = () => {
+      setOperator({ online_mode: true, authenticated: false });
+      setAudit(null);
+      setActive(false);
+      setScore(null);
+      setNewSession(false);
+      const current = audio.current;
+      if (current) {
+        cancelAnimationFrame(current.frame);
+        current.stream?.getTracks().forEach((track) => track.stop());
+        void current.client?.stop().finally(() => current.context?.close());
+        audio.current = null;
+      }
+      setAuthError("Your session expired. Please sign in again.");
+    };
+    window.addEventListener("vif:operator-auth-required", requireSignIn);
+    checkOperator()
+      .then((value) => {
+        if (!cancelled) {
+          setOperator(value);
+          setAuthError("");
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setAuthError(err.message);
+      });
+    checkBackend()
+      .then((value) => {
+        if (!cancelled) setHealth(value);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      window.removeEventListener("vif:operator-auth-required", requireSignIn);
+    };
+  }, [attempt]);
 
-async function signIn(event) {
-  event.preventDefault();
-  setAuthBusy(true);
-  setAuthError("");
-  try {
-    await loginOperator(operatorCode.trim());
-    const status = await checkOperator();
-    if (!status.authenticated) throw new Error("Sign-in cookie was not accepted. Open the current public demo URL and try again.");
-    setOperator(status);
-    setOperatorCode("");
-    setBackendError("");
-  } catch (error) {
-    setAuthError(error.message || "Unable to sign in.");
-  } finally {
-    setAuthBusy(false);
-  }
-}
+  const canAccess =
+    operator && (!operator.online_mode || operator.authenticated);
+  useEffect(() => {
+    if (!canAccess) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setAuditBusy(true);
+      getAudit(
+        page === "Audit"
+          ? { offset: auditOffset, q: query, risk: riskFilter }
+          : {},
+      )
+        .then((value) => {
+          if (!cancelled) {
+            setAudit(value);
+            setAuditError("");
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setAuditError(err.message);
+            setAudit(null);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setAuditBusy(false);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [canAccess, verdict, page, auditOffset, query, riskFilter, auditVersion]);
 
-useEffect(() => {
-  if (activePage !== "Audit" || !operator || (operator.online_mode && !operator.authenticated)) return;
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setInterval(() => {
+      checkBackend()
+        .then((value) => {
+          if (!cancelled) setHealth(value);
+        })
+        .catch(() => {
+          if (!cancelled) setHealth(null);
+        });
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
 
-  setAudit(null);
-  setAuditError("");
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => setElapsed((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [active]);
 
-  getAudit()
-    .then((data) => {
-      console.log("AUDIT DATA:", data);
-      setAudit(data);
-    })
-    .catch((error) => {
-      console.error("AUDIT ERROR:", error);
-      setAuditError(error.message || "Unable to load audit trail.");
-    });
-}, [activePage, operator]);
+  useEffect(
+    () => () => {
+      const current = audio.current;
+      if (!current) return;
+      cancelAnimationFrame(current.frame);
+      current.stream?.getTracks().forEach((track) => track.stop());
+      current.client?.detach();
+      current.client?.socket?.close();
+      current.context?.close().catch(() => {});
+    },
+    [],
+  );
 
-  const pages = ["Dashboard", "Live Call", "Verdict", "Audit"];
-
-  const renderPage = () => {
-    if (activePage === "Live Call") {
-      return (
-        <div className="page">
-          <div className="page-header">
-            <div>
-              <h1>Live Call</h1>
-              <p>Real-time voice integrity analysis</p>
-            </div>
-            <div className="status-pill">
-              <span className="status-dot"></span>
-              Analysis Active
-            </div>
-          </div>
-
-          <div className="call-grid">
-            <div
-  className={`card risk-card ${
-    liveData?.speech_seconds > 0
-      ? liveData?.risk?.toLowerCase() || ""
-      : ""
-  }`}
->
-  <div className="card-label">CURRENT RISK</div>
-
-  <div
-  className={`big-risk ${
-    liveData?.risk?.toLowerCase() || "waiting"
-  }`}
->
-  {liveData?.risk || "WAITING"}
-</div>
-
-  <div className={`risk-safe ${liveData?.risk?.toLowerCase() || "waiting"}`}>
-    {liveData?.speech_seconds > 0
-      ? liveData?.risk === "GREEN"
-        ? "LOW RISK"
-        : liveData?.risk === "AMBER"
-        ? "ELEVATED RISK"
-        : liveData?.risk === "RED"
-        ? "HIGH RISK"
-        : "ANALYZING"
-      : "WAITING FOR VOICE ANALYSIS"}
-  </div>
-
-              <div className="risk-bar">
-  <div
-    className={`risk-fill ${liveData?.risk?.toLowerCase() || ""}`}
-  ></div>
-</div>
-
-              <div className="risk-scale">
-                <span>0</span>
-                <span>40</span>
-                <span>75</span>
-                <span>100</span>
-              </div>
-            </div>
-
-            <div className="card">
-              <div className="card-label">VOICE ANALYSIS</div>
-
-              <div className="signal-row">
-                <span>Synthetic Speech</span>
-                <strong>
-  {liveData
-    ? `${Math.round(liveData.spoof_probability * 100)}%`
-    : "--"}
-</strong>
-              </div>
-
-              <div className="signal-row">
-                <span>Speaker Match</span>
-                <strong className="green-text">
-  {liveData?.speaker_status || "—"}
-</strong>
-              </div>
-
-              <div className="signal-row">
-                <span>Liveness</span>
-                <strong className="green-text">
-  {liveData?.liveness_score != null
-    ? `${Math.round(liveData.liveness_score * 100)}%`
-    : "—"}
-</strong>
-              </div>
-
-              <div className="signal-row">
-                <span>Inference</span>
-                <strong>
-  {liveData?.inference_ms != null
-    ? `${Math.round(liveData.inference_ms)} ms`
-    : "—"}
-</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="card waveform-card">
-            <div className="card-header">
-              <div>
-                <div className="card-label">LIVE AUDIO</div>
-                <h2>Caller audio stream</h2>
-              </div>
-              <span className="live-label">● LIVE</span>
-            </div>
-
-           <div className="waveform">
-  {waveformData.map((height, index) => (
-    <span
-      key={index}
-      style={{
-        height: `${height}%`,
-      }}
-    ></span>
-  ))}
-</div>
-          </div>
-
-          <div className="action-card">
-  <div>
-    <div className="action-title">Recommended Action</div>
-
-    <div className="action-text">
-      {!liveData
-        ? "Waiting for voice analysis..."
-        : liveData.decision?.action === "PROCEED"
-        ? "Continue call. No additional verification required."
-        : liveData.decision?.action === "CHALLENGE"
-        ? verificationStarted
-          ? "Verification in progress. Confirm the caller before continuing."
-          : "Elevated voice-cloning risk detected. Additional verification is required."
-        : liveData.decision?.action === "GATE"
-        ? "Sensitive action should be blocked until verification is completed."
-        : "Analyzing call risk..."}
-    </div>
-
-    {liveData?.decision?.action === "CHALLENGE" && !verificationStarted && (
-      <button
-        className={`verify-btn ${
-  liveData?.decision?.action === "GATE" ? "gate-btn" : ""
-}`}
-        onClick={() => setVerificationStarted(true)}
-      >
-        Start Verification
-      </button>
-    )}
-
-    {liveData?.decision?.action === "GATE" && !verificationStarted && (
-      <button
-        className={`verify-btn ${
-  liveData?.decision?.action === "GATE" ? "gate-btn" : ""
-}`}
-        onClick={() => setVerificationStarted(true)}
-      >
-        Verify Before Action
-      </button>
-    )}
-  </div>
-
-  <div
-    className={`action-badge ${
-      liveData?.decision?.action?.toLowerCase() || ""
-    }`}
-  >
-    {liveData?.decision?.action || "WAITING"}
-  </div>
-</div>
-          <button
-            className="end-call-btn"
-            onClick={async () => {
-  if (processorRef.current) {
-    processorRef.current.onaudioprocess = null;
-    processorRef.current.disconnect();
-    processorRef.current = null;
-  }
-
-  if (audioContextRef.current) {
-    await audioContextRef.current.close();
-    audioContextRef.current = null;
-  }
-
-  if (micStream) {
-    micStream.getTracks().forEach((track) => track.stop());
-    setMicStream(null);
-  }
-
-  if (animationRef.current) {
-  cancelAnimationFrame(animationRef.current);
-  animationRef.current = null;
-}
-
-if (analyserRef.current) {
-  analyserRef.current.disconnect();
-  analyserRef.current = null;
-}
-  setMicActive(false);
-
-   if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send("end");
-  }
-
-}}
-          >
-            End Call
-          </button>
-
-        </div>
-      );
+  async function signIn(event) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      await loginOperator(operatorCode.trim());
+      const status = await checkOperator();
+      if (!status.authenticated)
+        throw new Error(
+          "The sign-in cookie was not accepted. Open the current demo URL and retry.",
+        );
+      setOperator(status);
+      setOperatorCode("");
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setAuthBusy(false);
     }
+  }
 
-    if (activePage === "Verdict") {
+  function refreshAudit() {
+    setAuditBusy(true);
+    setAuditVersion((value) => value + 1);
+  }
+
+  async function releaseAudio() {
+    const current = audio.current;
+    if (!current) return;
+    cancelAnimationFrame(current.frame);
+    current.stream?.getTracks().forEach((track) => track.stop());
+    current.analyser?.disconnect();
+    try {
+      await current.client?.stop();
+    } finally {
+      if (current.context?.state !== "closed") await current.context?.close();
+      audio.current = null;
+    }
+  }
+
+  async function startSession() {
+    if (busy || active) return;
+    setBusy(true);
+    setError("");
+    setAnalysisState("Connecting");
+    try {
+      if (!navigator.mediaDevices?.getUserMedia)
+        throw new Error("Microphone access requires HTTPS or localhost.");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const current = { stream };
+      audio.current = current;
+      const context = new AudioContext();
+      current.context = context;
+      await context.resume();
+      setSession(null);
+      setScore(null);
+      setHistory([]);
+      setProgress(null);
+      setVerdict(null);
+      setVerification(null);
+      verificationRequest.current = Symbol();
+      setElapsed(0);
+      setManualCheck(false);
+      gateShown.current = false;
+      const client = new AnalysisClient(context, (update) => {
+        if (update.session) setSession(update.session);
+        if (update.analysisState) setAnalysisState(update.analysisState);
+        if (update.analysisState === "Unavailable") {
+          setScore(null);
+          setHistory([]);
+          setActive(false);
+          setBars(Array(56).fill(3));
+          if (!current.lost) {
+            current.lost = true;
+            queueMicrotask(() => {
+              void releaseAudio().catch(() => {});
+            });
+          }
+        }
+        if (update.analysisError !== undefined) setError(update.analysisError);
+        if (update.progress) setProgress(update.progress);
+        if (update.score) {
+          setScore(update.score);
+          setHistory((items) => [
+            ...items.slice(-89),
+            update.score.spoof_probability,
+          ]);
+          if (
+            ["GATE", "GATE_ACTION"].includes(update.score.decision?.action) &&
+            !gateShown.current
+          ) {
+            gateShown.current = true;
+            setGate(true);
+          }
+        }
+        if (update.verdict) {
+          setVerdict(update.verdict);
+          setVerification(null);
+          setPage("Verdict");
+        }
+      });
+      current.client = client;
+      await client.start(stream);
+      if (client.socket?.readyState !== WebSocket.OPEN)
+        throw new Error(
+          "The analysis connection closed. Please try a new session.",
+        );
+      const source = context.createMediaStreamSource(stream);
+      const analyser = context.createAnalyser();
+      // Read audio samples, not frequency bins. Each bar records the measured
+      // microphone level over time, so quiet input cannot animate the display.
+      analyser.fftSize = 2048;
+      current.analyser = analyser;
+      source.connect(analyser);
+      const samples = new Float32Array(analyser.fftSize);
+      const levels = Array(56).fill(3);
+      let lastPaint = 0;
+      const draw = (time) => {
+        if (time - lastPaint >= 40) {
+          analyser.getFloatTimeDomainData(samples);
+          let energy = 0;
+          let mean = 0;
+          for (const sample of samples) mean += sample;
+          mean /= samples.length;
+          for (const sample of samples) energy += (sample - mean) ** 2;
+          const rms = Math.sqrt(energy / samples.length);
+          // A fixed dB scale preserves loudness differences without amplifying
+          // silence through automatic visual normalization. Floor: -60 dBFS.
+          const db = 20 * Math.log10(Math.max(rms, 0.000001));
+          const height = 3 + 92 * Math.max(0, Math.min(1, (db + 60) / 54));
+          levels.shift();
+          levels.push(height);
+          setBars([...levels]);
+          lastPaint = time;
+        }
+        current.frame = requestAnimationFrame(draw);
+      };
+      current.frame = requestAnimationFrame(draw);
+      setBars([...levels]);
+      setActive(true);
+      setNewSession(false);
+      setPage("Live Call");
+    } catch (err) {
+      setError(
+        err.message ||
+          "Unable to access the microphone. Check browser permissions.",
+      );
+      await releaseAudio().catch(() => {});
+      setAnalysisState("Unavailable");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function endSession() {
+    setBusy(true);
+    setGate(false);
+    setActive(false);
+    try {
+      await releaseAudio();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+      setBars(Array(56).fill(3));
+    }
+  }
+
+  async function verify() {
+    const request = Symbol();
+    verificationRequest.current = request;
+    setVerifyBusy(true);
+    try {
+      const result = await verifyVerdict(verdict);
+      if (request === verificationRequest.current)
+        setVerification({ verdict, result });
+    } catch (err) {
+      if (request === verificationRequest.current)
+        setVerification({
+          verdict,
+          result: { valid: false, reason: err.message },
+        });
+    } finally {
+      setVerifyBusy(false);
+    }
+  }
+
+  function openRecord(entry) {
+    if (active || busy) {
+      setPage("Live Call");
+      return;
+    }
+    setVerdict(entry.payload);
+    setVerification(null);
+    setPage("Verdict");
+  }
+
+  const entries = [...(audit?.entries || [])].sort(
+    (a, b) => (b.seq ?? b.ts_ms) - (a.seq ?? a.ts_ms),
+  );
+  const filtered = entries.filter((entry) => {
+    const payload = payloadOf(entry);
+    return (
+      (riskFilter === "ALL" || payload.risk === riskFilter) &&
+      `${payload.session_id || ""} ${payload.action || ""} ${payload.risk || ""}`
+        .toLowerCase()
+        .includes(query.toLowerCase())
+    );
+  });
+  const selectedEntry =
+    filtered.find((entry) => entry.entry_hash === selected) || filtered[0];
   const final = verdict?.payload;
-
-  const risk = final?.risk || "UNKNOWN";
-  const action = final?.action || "—";
-
-  const riskClass = risk.toLowerCase();
-
-  const riskMessage =
-    risk === "GREEN"
-      ? "The call shows a low level of synthetic-speech risk."
-      : risk === "AMBER"
-      ? "The call shows elevated synthetic-speech risk and may require additional verification."
-      : risk === "RED"
-      ? "The call shows a high level of synthetic-speech risk."
-      : "Risk assessment is unavailable.";
-
-  const actionMessage =
-    action === "PROCEED"
-      ? "Continue the call normally."
-      : action === "CHALLENGE"
-      ? "Additional verification is recommended before sensitive actions."
-      : action === "GATE"
-      ? "Sensitive actions should not proceed without independent verification."
-      : "No action recommendation available.";
-
-  return (
-    <div className="page verdict-page">
-
-      <div className="verdict-header">
-        <div>
-          <div className="section-label">FINAL RESULT</div>
-          <h1>Call Verdict</h1>
-          <p>Final AI assessment for the completed call.</p>
-        </div>
-
-        <button
-          className="verdict-back-btn"
-          onClick={() => setActivePage("Dashboard")}
-        >
-          ← Dashboard
-        </button>
+  const verification =
+    verificationResult?.verdict === verdict
+      ? {
+          ...verificationResult.result,
+          fresh:
+            verificationResult.result.fresh ?? verificationResult.result.valid,
+          valid:
+            verificationResult.result.signature_valid ??
+            verificationResult.result.valid,
+        }
+      : null;
+  const demo = session?.demo_mode ?? health?.demo_mode;
+  const duration = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
+  const newButton = (
+    <button
+      className="button primary"
+      disabled={busy}
+      onClick={() => (active ? setPage("Live Call") : setNewSession(true))}
+    >
+      <Icon name={active ? "wave" : "plus"} size={17} />
+      {active ? "Open live session" : "New session"}
+    </button>
+  );
+  const pageHeading = (title, subtitle, action) => (
+    <div className="page-heading">
+      <div>
+        <h1>{title}</h1>
+        <p>{subtitle}</p>
       </div>
-
-      {/* HERO VERDICT */}
-      <div className={`verdict-hero ${riskClass}`}>
-
-        <div className="verdict-hero-left">
-
-          <div className="verdict-status-row">
-            <span className={`verdict-status-dot ${riskClass}`}></span>
-            <span>FINAL ASSESSMENT</span>
-          </div>
-
-          <div className="verdict-main-row">
-
-            <div className={`risk-circle ${riskClass}`}>
-              <div className="risk-circle-inner">
-                <span>RISK</span>
-                <strong>{risk}</strong>
-              </div>
-            </div>
-
-            <div className="verdict-main-text">
-              <div className="verdict-eyebrow">FINAL DECISION</div>
-
-              <h2>{action}</h2>
-
-              <p>{actionMessage}</p>
-
-              <div className={`risk-description ${riskClass}`}>
-                {riskMessage}
-              </div>
-            </div>
-
-          </div>
-        </div>
-
-        <div className="verdict-hero-right">
-
-          <div className="hero-stat">
-            <span>Synthetic Speech</span>
-            <strong>
-              {final?.spoof_probability != null
-                ? `${Math.round(final.spoof_probability * 100)}%`
-                : "—"}
-            </strong>
-          </div>
-
-          <div className="hero-stat">
-            <span>Speaker Status</span>
-            <strong>{final?.speaker_status || "—"}</strong>
-          </div>
-
-          <div className="hero-stat">
-            <span>Liveness</span>
-            <strong>
-              {final?.liveness_score != null
-                ? `${Math.round(final.liveness_score * 100)}%`
-                : "—"}
-            </strong>
-          </div>
-
-        </div>
-      </div>
-
-      {/* ANALYSIS */}
-      <div className="verdict-section-title">
-        <div>
-          <div className="section-label">VOICE ANALYSIS</div>
-          <h2>Detection Summary</h2>
-        </div>
-      </div>
-
-      <div className="verdict-metrics-grid">
-
-        <div className="verdict-metric-card">
-          <div className="metric-icon">◈</div>
-          <div>
-            <span>Synthetic Speech</span>
-            <strong>
-              {final?.spoof_probability != null
-                ? `${Math.round(final.spoof_probability * 100)}%`
-                : "—"}
-            </strong>
-          </div>
-        </div>
-
-        <div className="verdict-metric-card">
-          <div className="metric-icon">◎</div>
-          <div>
-            <span>Speaker Status</span>
-            <strong>{final?.speaker_status || "—"}</strong>
-          </div>
-        </div>
-
-        <div className="verdict-metric-card">
-          <div className="metric-icon">◉</div>
-          <div>
-            <span>Liveness</span>
-            <strong>
-              {final?.liveness_score != null
-                ? `${Math.round(final.liveness_score * 100)}%`
-                : "—"}
-            </strong>
-          </div>
-        </div>
-
-        <div className="verdict-metric-card">
-          <div className="metric-icon">▣</div>
-          <div>
-            <span>Speech Analyzed</span>
-            <strong>
-              {final?.speech_seconds != null
-                ? `${Number(final.speech_seconds).toFixed(1)} s`
-                : "—"}
-            </strong>
-          </div>
-        </div>
-
-      </div>
-
-      {/* RISK SPECTRUM */}
-<div className="risk-spectrum-card">
-
-  <div className="risk-spectrum-header">
-    <div>
-      <div className="section-label">RISK ASSESSMENT</div>
-      <h2>Synthetic Speech Risk</h2>
-    </div>
-
-    <div className={`risk-value ${riskClass}`}>
-      {final?.spoof_probability != null
-        ? `${Math.round(final.spoof_probability * 100)}%`
-        : "—"}
-    </div>
-  </div>
-
-  <div className="risk-spectrum">
-
-    <div className="risk-zone green-zone">
-      <span>LOW</span>
-      <small>0–40</small>
-    </div>
-
-    <div className="risk-zone amber-zone">
-      <span>ELEVATED</span>
-      <small>40–75</small>
-    </div>
-
-    <div className="risk-zone red-zone">
-      <span>HIGH</span>
-      <small>75–100</small>
-    </div>
-
-    {final?.spoof_probability != null && (
-      <div
-        className="risk-marker"
-        style={{
-          left: `${Math.min(
-            100,
-            Math.max(0, final.spoof_probability * 100)
-          )}%`,
-        }}
-      >
-        <div className="risk-marker-line"></div>
-        <span>You are here</span>
-      </div>
-    )}
-
-  </div>
-
-  <div className="risk-spectrum-caption">
-    Synthetic-speech probability compared with the configured response thresholds.
-  </div>
-
-</div>
-
-      {/* MODEL + SECURITY */}
-      <div className="verdict-two-column">
-
-        <div className="verdict-detail-card">
-          <div className="section-label">MODEL & POLICY</div>
-          <h2>Detection Configuration</h2>
-
-          <div className="detail-row">
-            <span>Model Version</span>
-            <strong>{final?.model_version || "—"}</strong>
-          </div>
-
-          <div className="detail-row">
-            <span>Policy Version</span>
-            <strong>{final?.policy_version || "—"}</strong>
-          </div>
-        </div>
-
-        <div className="verdict-detail-card security-card">
-
-  <div className="section-label">SECURITY</div>
-  <h2>Signed Verdict</h2>
-
-  <div className="signature-status">
-    <div className="signature-check">✓</div>
-
-    <div>
-      <strong>
-        {verdict?.signature
-          ? "Cryptographic signature attached"
-          : "Signature unavailable"}
-      </strong>
-
-      <span>
-        {verdict?.algorithm || "—"} signed assessment
-      </span>
-    </div>
-  </div>
-
-</div>
-      </div>
-
-      {/* FOOTER */}
-      <div className="verdict-footer-card">
-
-        <div>
-          <div className="section-label">SESSION COMPLETE</div>
-          <h3>Voice analysis has finished</h3>
-          <p>
-            The final assessment has been generated and the session is now
-            complete.
-          </p>
-        </div>
-
-        <button
-          className="verdict-dashboard-btn"
-          onClick={() => setActivePage("Dashboard")}
-        >
-          Return to Dashboard
-        </button>
-
-      </div>
-
+      {action}
     </div>
   );
-}
-    if (activePage === "Audit") {
-  const entries = audit?.entries || [];
 
-  return (
-    <div className="page audit-page">
-
-      <div className="audit-header">
-        <div>
-          <div className="section-label">SECURITY LOG</div>
-          <h1>Audit Trail</h1>
-          <p>Signed and tamper-evident activity records</p>
-        </div>
-
-        <div
-          className={`chain-status ${
-  !audit
-    ? "loading"
-    : audit.chain_valid
-    ? "valid"
-    : "invalid"
-}`}
-        >
-          <span className="chain-dot"></span>
-          {!audit
-  ? "Loading"
-  : audit.chain_valid
-  ? "Chain Valid"
-  : "Chain Invalid"}
-        </div>
-      </div>
-
-      {auditError ? (
-  <div className="audit-loading-card">
-    <div className="audit-empty-icon">!</div>
-    <h3>Unable to load audit trail</h3>
-    <p>{auditError}</p>
-  </div>
-) : !audit ? (
-  <div className="audit-loading-card">
-    <div className="audit-loading-spinner"></div>
-    <h3>Loading audit trail</h3>
-    <p>Retrieving security records...</p>
-  </div>
-) : (
-        <>
-          <div className="audit-summary-grid">
-
-            <div className="audit-summary-card">
-              <div className="audit-summary-icon green">✓</div>
-              <div>
-                <span>CHAIN INTEGRITY</span>
-                <strong>
-                  {audit.chain_valid ? "Verified" : "Invalid"}
-                </strong>
-                <small>
-                  {audit.reason || "Integrity status confirmed"}
-                </small>
-              </div>
+  function renderDashboard() {
+    return (
+      <div className="page dashboard-page">
+        <div className="eyebrow">YOUR WORKSPACE</div>
+        {pageHeading(
+          "A little more clarity. A lot more trust.",
+          "Start a session, understand the signals, and keep a record of every assessment.",
+          newButton,
+        )}
+        <div className="summary-grid">
+          <div className="summary-card lavender">
+            <span className="tile-icon">
+              <Icon name="wave" />
+            </span>
+            <div>
+              <span>Recorded sessions</span>
+              <strong>{audit ? (audit.count ?? entries.length) : "—"}</strong>
+              <small>Signed records in your audit log</small>
             </div>
-
-            <div className="audit-summary-card">
-              <div className="audit-summary-icon blue">#</div>
-              <div>
-                <span>TOTAL RECORDS</span>
-                <strong>{entries.length}</strong>
-                <small>Signed audit records</small>
-              </div>
-            </div>
-
-            <div className="audit-summary-card">
-              <div className="audit-summary-icon purple">⌁</div>
-              <div>
-                <span>CHAIN STATUS</span>
-                <strong>
-                  {audit.chain_valid ? "INTACT" : "CHECK REQUIRED"}
-                </strong>
-                <small>Hash-linked record chain</small>
-              </div>
-            </div>
-
           </div>
-
-          <div className="audit-events-card">
-
-            <div className="audit-events-header">
-              <div>
-                <div className="section-label">RECENT RECORDS</div>
-                <h2>Activity Log</h2>
-              </div>
-
-              <div className="audit-count">
-                {entries.length} RECORDS
-              </div>
+          <div className="summary-card mint">
+            <span className="tile-icon">
+              <Icon name="shield" />
+            </span>
+            <div>
+              <span>For review</span>
+              <strong>
+                {audit
+                  ? entries.filter((entry) =>
+                      ["AMBER", "RED"].includes(payloadOf(entry).risk),
+                    ).length
+                  : "—"}
+              </strong>
+              <small>Elevated risk in loaded records</small>
             </div>
-
-            <div className="audit-timeline">
-
-              {entries.length === 0 ? (
-                <div className="audit-empty">
-                  <div className="audit-empty-icon">—</div>
-                  <h3>No audit records</h3>
-                  <p>No signed activity has been recorded yet.</p>
+          </div>
+          <div className="summary-card blue">
+            <span className="tile-icon">
+              <Icon name="mic" />
+            </span>
+            <div>
+              <span>Current session</span>
+              <strong className="summary-word">
+                {active ? "In progress" : "Ready when you are"}
+              </strong>
+              <small>
+                {active
+                  ? `${duration} · ${analysisState}`
+                  : "Live microphone analysis"}
+              </small>
+            </div>
+          </div>
+        </div>
+        <div className="section-heading">
+          <h2>Recent sessions</h2>
+          <button
+            className="text-button"
+            onClick={() => {
+              setPage("Audit");
+              refreshAudit();
+            }}
+          >
+            View audit trail <Icon name="arrow" size={16} />
+          </button>
+        </div>
+        {auditError && (
+          <p className="notice error" role="alert">
+            Session history unavailable: {auditError}{" "}
+            <button className="text-button" onClick={refreshAudit}>
+              Retry
+            </button>
+          </p>
+        )}
+        <div className="session-grid">
+          <button
+            className="session-card create-card"
+            disabled={busy}
+            onClick={() =>
+              active ? setPage("Live Call") : setNewSession(true)
+            }
+          >
+            <span className="create-icon">
+              <Icon name={active ? "wave" : "plus"} size={24} />
+            </span>
+            <h3>{active ? "Return to live session" : "Create new session"}</h3>
+            <p>Give every conversation a closer look.</p>
+          </button>
+          {entries.slice(0, 7).map((entry, index) => {
+            const payload = payloadOf(entry);
+            return (
+              <button
+                className={`session-card ${["peach", "blue", "lavender", "mint"][index % 4]}`}
+                key={entry.entry_hash || index}
+                onClick={() => openRecord(entry)}
+              >
+                <div className="session-card-top">
+                  <span className="tile-icon">
+                    <Icon name="wave" size={26} />
+                  </span>
+                  <Icon name="arrow" size={17} />
                 </div>
-              ) : (
-                entries
-                  .slice()
-                  .reverse()
-                  .slice(0, 5)
-                  .map((entry, index) => {
-
-                    const signedPayload = entry.payload || {};
-const verdictPayload = signedPayload.payload || {};
-
-const risk = verdictPayload.risk || "—";
-
-const action =
-  verdictPayload.decision?.action ||
-  verdictPayload.action ||
-  "VERDICT";
-
-const sessionId = verdictPayload.session_id || "—";
-
-const timestamp = entry.ts_ms
-  ? new Date(entry.ts_ms).toLocaleString()
-  : "Unknown time";
-                    return (
-                      <div
-                        className="audit-event-row"
-                        key={entry.entry_hash || index}
-                      >
-
-                        <div className="audit-event-marker">
-                          <span>✓</span>
-                        </div>
-
-                        <div className="audit-event-content">
-
-                          <div className="audit-event-top">
-                            <strong>
-  {action === "VERDICT"
-    ? "Signed Verdict"
-    : `${action} Decision`}
-</strong>
-
-                            <span className="audit-verified-tag">
-                              SIGNED
-                            </span>
-                          </div>
-
-                          <div className="audit-event-bottom">
-  <span>{timestamp}</span>
-  <span>•</span>
-  <span>Risk: {risk}</span>
-  <span>•</span>
-  <span>
-    Session: {sessionId === "—" ? "—" : sessionId.slice(0, 8) + "..."}
-  </span>
-</div>
-
-                        </div>
-
-                        <div className="audit-event-index">
-                          #{entry.seq ?? index}
-                        </div>
-
-                      </div>
-                    );
-                  })
-              )}
-
-            </div>
-          </div>
-
-          <div className="audit-security-card">
-
-            <div className="audit-security-icon">✓</div>
-
-            <div className="audit-security-content">
-              <div className="section-label">INTEGRITY PROTECTION</div>
-              <h2>Audit chain is tamper-evident</h2>
+                <h3>Session {payload.session_id?.slice(0, 8) || "record"}</h3>
+                <p>{date(entry.ts_ms)}</p>
+                <Badge risk={payload.risk} />
+              </button>
+            );
+          })}
+          {!entries.length && (
+            <div className="first-session">
+              <Icon name="file" size={26} />
+              <h3>Your sessions will live here</h3>
               <p>
-                Each record is linked to the previous record through a
-                cryptographic hash chain and contains a signed verdict payload.
+                Complete your first analysis to see its signed result and return
+                to it anytime.
               </p>
             </div>
+          )}
+        </div>
+        <div className="workspace-note">
+          <Icon name="shield" />
+          <p>
+            <strong>Three signals. A clearer picture.</strong> Synthetic speech,
+            speaker identity, and liveness are assessed separately. A low spoof
+            score does not verify identity.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
-            <div className="audit-security-status">
-              <span></span>
-              {audit.chain_valid
-                ? "INTEGRITY VERIFIED"
-                : "REVIEW REQUIRED"}
+  function renderLive() {
+    return (
+      <div className="page live-page">
+        {pageHeading(
+          "Live Call",
+          "A closer look at the voice on the other end.",
+          <Badge
+            tone={active && analysisState !== "Unavailable" ? "green" : ""}
+          >
+            {active ? analysisState : "No active session"}
+          </Badge>,
+        )}
+        {error && (
+          <p className="notice error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="live-workspace">
+          <section className="panel sources-panel">
+            <div className="panel-heading">
+              <h2>Sources</h2>
+              <Icon name="mic" size={17} />
             </div>
+            <div className="panel-body">
+              <span className="label">SESSION</span>
+              <h3 className="session-id">
+                {session ? session.session_id.slice(0, 12) : "No session yet"}
+              </h3>
+              <div className="source-device">
+                <Icon name="mic" />
+                <div>
+                  <strong>Default microphone</strong>
+                  <small>Local audio source</small>
+                </div>
+              </div>
+              <Badge tone={active ? "green" : ""}>
+                {active ? "Microphone active" : "Microphone idle"}
+              </Badge>
+              <div className="source-duration">
+                <Icon name="clock" />
+                <div>
+                  <span className="label">DURATION</span>
+                  <strong>{duration}</strong>
+                </div>
+              </div>
+              <dl className="source-details">
+                <div>
+                  <dt>Speech analyzed</dt>
+                  <dd>
+                    {Number(
+                      score?.speech_seconds ?? progress?.speech_seconds ?? 0,
+                    ).toFixed(1)}{" "}
+                    s
+                  </dd>
+                </div>
+                <div>
+                  <dt>Sample rate</dt>
+                  <dd>
+                    {session?.sample_rate
+                      ? `${session.sample_rate / 1000} kHz`
+                      : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Model</dt>
+                  <dd>
+                    {session?.model_version ||
+                      health?.model_version ||
+                      "Unavailable"}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+            <div className="panel-footnote">
+              <Icon name="shield" size={17} />
+              <span>
+                Analysis informs the next action. It does not establish
+                identity.
+              </span>
+            </div>
+          </section>
+          <section className="panel analysis-panel">
+            <div className="panel-heading">
+              <h2>Analysis</h2>
+              <span className="subtle">
+                {demo ? "Simulated detector" : "Live voice analysis"}
+              </span>
+            </div>
+            <div className="panel-body">
+              <div className="waveform-area lavender">
+                <div className="waveform-title">
+                  <span>Live audio</span>
+                  <span>{active ? "Listening" : "Standby"}</span>
+                </div>
+                <div
+                  className="waveform"
+                  aria-label={
+                    active ? "Live microphone waveform" : "Microphone inactive"
+                  }
+                >
+                  {bars.map((height, index) => (
+                    <i key={index} style={{ height: `${height}%` }} />
+                  ))}
+                </div>
+                <span className="waveform-caption">
+                  {active
+                    ? "Listening for speech from your microphone"
+                    : "Start a session to see your audio here"}
+                </span>
+              </div>
+              <div className="chart-card">
+                <div className="section-heading">
+                  <h3>Spoof probability</h3>
+                  <strong>{percent(score?.spoof_probability)}</strong>
+                </div>
+                <div className="chart">
+                  <div className="chart-labels">
+                    <span>100%</span>
+                    <span>50%</span>
+                    <span>0%</span>
+                  </div>
+                  <svg
+                    viewBox="0 0 500 150"
+                    preserveAspectRatio="none"
+                    role="img"
+                    aria-label="Spoof probability over recent analysis windows"
+                  >
+                    <path
+                      className="chart-grid"
+                      d="M0 1H500M0 75H500M0 149H500M100 0V150M200 0V150M300 0V150M400 0V150"
+                    />
+                    {history.length > 0 && (
+                      <polyline
+                        className="chart-line"
+                        points={history
+                          .map(
+                            (value, index) =>
+                              `${history.length === 1 ? 250 : (index / (history.length - 1)) * 500},${149 - value * 148}`,
+                          )
+                          .join(" ")}
+                      />
+                    )}
+                    {history.length === 1 && (
+                      <circle
+                        cx="250"
+                        cy={149 - history[0] * 148}
+                        r="3"
+                        fill="#8666cd"
+                      />
+                    )}
+                  </svg>
+                  {!history.length && (
+                    <span className="chart-empty">
+                      Waiting for the first analysis window
+                    </span>
+                  )}
+                </div>
+                <div className="chart-footer">
+                  <span>Recent analysis windows</span>
+                  <span>
+                    {score?.inference_ms != null
+                      ? `${Math.round(score.inference_ms)} ms inference`
+                      : "No score yet"}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="panel-body">
+              {session && active && (
+                <Enrollment
+                  key={session.session_id}
+                  sessionId={session.session_id}
+                />
+              )}
+            </div>
+            <div className="call-controls">
+              <span className="mic-indicator">
+                <Icon name="mic" />
+              </span>
+              {active ? (
+                <button
+                  className="button primary"
+                  onClick={endSession}
+                  disabled={busy}
+                >
+                  <Icon name="stop" size={16} />
+                  End session
+                </button>
+              ) : busy ? (
+                <span className="subtle">Finalizing session…</span>
+              ) : (
+                newButton
+              )}
+            </div>
+          </section>
+          <section className="panel signals-panel">
+            <div className="panel-heading">
+              <h2>Signals</h2>
+              <Icon name="grid" size={17} />
+            </div>
+            <div className="panel-body">
+              <div
+                className={`signal-tile ${score?.risk === "RED" ? "rose" : score?.risk === "AMBER" ? "peach" : score ? "mint" : "neutral"}`}
+              >
+                <Icon name="shield" />
+                <div>
+                  <span>Spoof probability</span>
+                  <strong>{percent(score?.spoof_probability)}</strong>
+                  <Badge risk={score?.risk} />
+                </div>
+              </div>
+              <div className="signal-tile blue">
+                <Icon name="user" />
+                <div>
+                  <span>Speaker</span>
+                  <strong className="signal-word">
+                    {readable(score?.speaker_status)}
+                  </strong>
+                  <small>
+                    {score?.speaker_similarity != null
+                      ? `${percent(score.speaker_similarity)} similarity`
+                      : "Identity assessed separately"}
+                  </small>
+                </div>
+              </div>
+              <div className="signal-tile lavender">
+                <Icon name="wave" />
+                <div>
+                  <span>Liveness</span>
+                  <strong className="signal-word">
+                    {score?.liveness_score != null
+                      ? Number(score.liveness_score).toFixed(2)
+                      : "Unavailable"}
+                  </strong>
+                  <small>Conversational timing signals</small>
+                </div>
+              </div>
+              <div className="signal-tile peach">
+                <Icon name="file" />
+                <div>
+                  <span>Policy</span>
+                  <strong className="signal-word">
+                    {readable(
+                      score?.decision?.action || "WAITING_FOR_ANALYSIS",
+                    )}
+                  </strong>
+                  <small>
+                    {score?.decision?.reason ||
+                      "A recommendation appears after analysis."}
+                  </small>
+                </div>
+              </div>
+              {["CHALLENGE", "GATE", "GATE_ACTION"].includes(
+                score?.decision?.action,
+              ) && (
+                <div className="challenge-card">
+                  <h3>Independent verification</h3>
+                  <p>
+                    {score?.challenge?.phrase ||
+                      "Confirm the caller through an independent, trusted channel before sensitive actions."}
+                  </p>
+                  <button
+                    className="button secondary"
+                    onClick={() => setManualCheck(true)}
+                    disabled={manualCheck}
+                  >
+                    {manualCheck
+                      ? "Manual check in progress"
+                      : "Start manual check"}
+                  </button>
+                  <small>This does not automatically verify identity.</small>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  }
 
+  function renderVerdict() {
+    return (
+      <div className="page verdict-page">
+        {pageHeading(
+          "Session verdict",
+          final
+            ? `Detailed results for session ${final.session_id?.slice(0, 12) || "—"}.`
+            : "A signed summary of your completed analysis.",
+          <button
+            className="button secondary"
+            onClick={() => setPage("Dashboard")}
+          >
+            Back to workspace
+          </button>,
+        )}
+        {!final ? (
+          <div className="panel">
+            <Empty
+              icon="shield"
+              title="Every session ends with a clearer picture"
+              action={newButton}
+            >
+              Complete a session or open a recent record to view its assessment
+              and verify its signature.
+            </Empty>
           </div>
-        </>
+        ) : (
+          <>
+            {(final.demo_mode || final.model_version?.startsWith("stub-")) && (
+              <p className="notice">
+                Demo result · simulated detector. This is not detection
+                evidence.
+              </p>
+            )}
+            <section
+              className={`verdict-banner ${final.risk === "GREEN" ? "mint" : final.risk === "RED" ? "rose" : final.risk === "AMBER" ? "peach" : "neutral"}`}
+            >
+              <span className="tile-icon">
+                <Icon name="shield" size={28} />
+              </span>
+              <div>
+                <h2>{riskName(final.risk)}</h2>
+                <p>
+                  {final.decision?.reason ||
+                    `Recommended action: ${readable(final.action)}`}
+                </p>
+              </div>
+              <div className="verdict-probability">
+                <span>Spoof probability</span>
+                <strong>{percent(final.spoof_probability)}</strong>
+              </div>
+            </section>
+            <div className="verdict-signals">
+              <div className="signal-tile mint">
+                <Icon name="shield" />
+                <div>
+                  <span>Spoof risk</span>
+                  <strong>{percent(final.spoof_probability)}</strong>
+                  <Badge risk={final.risk} />
+                </div>
+              </div>
+              <div className="signal-tile blue">
+                <Icon name="user" />
+                <div>
+                  <span>Speaker</span>
+                  <strong className="signal-word">
+                    {readable(final.speaker_status)}
+                  </strong>
+                  <small>Separate from synthetic-speech risk</small>
+                </div>
+              </div>
+              <div className="signal-tile lavender">
+                <Icon name="wave" />
+                <div>
+                  <span>Liveness</span>
+                  <strong className="signal-word">
+                    {final.liveness_score != null
+                      ? Number(final.liveness_score).toFixed(2)
+                      : "Unavailable"}
+                  </strong>
+                  <small>Conversational timing assessment</small>
+                </div>
+              </div>
+            </div>
+            <section className="panel signature-panel">
+              <div className="section-heading">
+                <div className="title-with-icon">
+                  <Icon name="file" size={28} />
+                  <div>
+                    <h2>Signature verification</h2>
+                    <p>Check that this assessment has not been altered.</p>
+                  </div>
+                </div>
+                <button
+                  className="button primary"
+                  disabled={verifyBusy || !verdict.signature}
+                  onClick={verify}
+                >
+                  <Icon name="shield" size={16} />
+                  {verifyBusy ? "Verifying…" : "Verify signature"}
+                </button>
+              </div>
+              <dl className="signature-details">
+                <div>
+                  <dt>Status</dt>
+                  <dd>
+                    <Badge
+                      tone={
+                        verification
+                          ? verification.valid
+                            ? "green"
+                            : "red"
+                          : ""
+                      }
+                    >
+                      {verification
+                        ? verification.valid
+                          ? "Verified"
+                          : "Verification failed"
+                        : verdict.signature
+                          ? "Not yet verified"
+                          : "Signature unavailable"}
+                    </Badge>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Algorithm</dt>
+                  <dd>{verdict.algorithm || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Session ID</dt>
+                  <dd className="mono">{final.session_id || "—"}</dd>
+                </div>
+              </dl>
+              {verification && (
+                <p
+                  className={`notice ${verification.valid ? "" : "error"}`}
+                  role="status"
+                >
+                  {(verification.valid && !verification.fresh
+                    ? "Signature intact, but this verdict is not fresh enough to authorize a new action. "
+                    : "") +
+                    (verification.reason ||
+                      (verification.valid
+                        ? "The signature is valid. This confirms integrity, not the accuracy of the assessment."
+                        : "Do not rely on this verdict until it is independently verified."))}
+                </p>
+              )}
+            </section>
+            <section className="panel details-panel">
+              <h2>Assessment details</h2>
+              <dl className="assessment-details">
+                <div>
+                  <dt>Model</dt>
+                  <dd>{final.model_version || "Unavailable"}</dd>
+                </div>
+                <div>
+                  <dt>Policy action</dt>
+                  <dd>{readable(final.action || final.decision?.action)}</dd>
+                </div>
+                <div>
+                  <dt>Completed</dt>
+                  <dd>{date(final.timestamp)}</dd>
+                </div>
+                <div>
+                  <dt>Speech analyzed</dt>
+                  <dd>
+                    {final.speech_seconds != null
+                      ? `${Number(final.speech_seconds).toFixed(1)} seconds`
+                      : "Unavailable"}
+                  </dd>
+                </div>
+              </dl>
+            </section>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  function renderAudit() {
+    const detail = selectedEntry ? payloadOf(selectedEntry) : null;
+    return (
+      <div className="page audit-page">
+        {pageHeading(
+          "Audit trail",
+          "A traceable record of every completed assessment.",
+          <button
+            className="button secondary"
+            onClick={refreshAudit}
+            disabled={auditBusy}
+          >
+            <Icon name="refresh" size={16} />
+            {auditBusy ? "Refreshing…" : "Refresh records"}
+          </button>,
+        )}
+        {auditError && (
+          <p className="notice error" role="alert">
+            {auditError}
+          </p>
+        )}
+        <div
+          className={`chain-banner ${audit ? (audit.chain_valid ? "mint" : "rose") : "neutral"}`}
+        >
+          <span className="tile-icon">
+            <Icon name="shield" size={25} />
+          </span>
+          <div>
+            <span className="label">HASH CHAIN</span>
+            <h2>
+              {audit
+                ? audit.chain_valid
+                  ? "Integrity verified"
+                  : "Review required"
+                : auditError
+                  ? "Unavailable"
+                  : "Loading records…"}
+            </h2>
+            <p>
+              {audit
+                ? audit.chain_valid
+                  ? "The backend verified the links between audit records."
+                  : audit.reason || "The audit chain could not be verified."
+                : "Chain status will appear when records are loaded."}
+            </p>
+          </div>
+          <span className="record-count">{audit?.count ?? "—"} records</span>
+        </div>
+        <div className="audit-toolbar">
+          <label className="search-field">
+            <Icon name="search" size={17} />
+            <input
+              aria-label="Search sessions"
+              placeholder="Search sessions or actions…"
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setAuditOffset(0);
+              }}
+            />
+          </label>
+          <select
+            aria-label="Filter by risk"
+            value={riskFilter}
+            onChange={(event) => {
+              setRiskFilter(event.target.value);
+              setAuditOffset(0);
+            }}
+          >
+            <option value="ALL">All risk levels</option>
+            <option value="GREEN">Low risk</option>
+            <option value="AMBER">Elevated risk</option>
+            <option value="RED">High risk</option>
+          </select>
+          <span className="subtle">
+            {filtered.length} shown · {audit?.total ?? filtered.length} matching
+          </span>
+        </div>
+        <div className="audit-toolbar" aria-label="Audit pagination">
+          <button
+            className="button secondary"
+            disabled={auditBusy || auditOffset === 0}
+            onClick={() => setAuditOffset(Math.max(0, auditOffset - 50))}
+          >
+            Previous records
+          </button>
+          <span>Page {Math.floor(auditOffset / 50) + 1}</span>
+          <button
+            className="button secondary"
+            disabled={auditBusy || !audit?.has_more}
+            onClick={() => setAuditOffset(auditOffset + 50)}
+          >
+            Next records
+          </button>
+        </div>
+        <div className="audit-layout">
+          <section className="panel audit-table-panel">
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Session</th>
+                    <th>Completed</th>
+                    <th>Risk</th>
+                    <th>Record</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((entry, index) => {
+                    const payload = payloadOf(entry);
+                    return (
+                      <tr
+                        key={entry.entry_hash || index}
+                        className={
+                          selectedEntry === entry ? "selected-row" : ""
+                        }
+                      >
+                        <td>
+                          <button
+                            className="record-button"
+                            onClick={() => setSelected(entry.entry_hash)}
+                            aria-label={`View session ${payload.session_id}`}
+                          >
+                            {payload.session_id?.slice(0, 8) || "Unknown"}
+                          </button>
+                        </td>
+                        <td>{date(entry.ts_ms)}</td>
+                        <td>
+                          <Badge risk={payload.risk} />
+                        </td>
+                        <td>
+                          {entry.payload?.signature ? "Signed" : "Unsigned"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {!filtered.length && (
+              <Empty
+                icon="file"
+                title={
+                  query || riskFilter !== "ALL"
+                    ? "No matching sessions"
+                    : "No audit records yet"
+                }
+              >
+                {query || riskFilter !== "ALL"
+                  ? "Try another search or risk filter."
+                  : "Completed sessions will appear here with their signed assessment."}
+              </Empty>
+            )}
+          </section>
+          {detail && (
+            <aside className="panel record-details">
+              <div className="panel-heading">
+                <h2>Session details</h2>
+                <Icon name="file" size={17} />
+              </div>
+              <div className="panel-body">
+                <dl>
+                  <div>
+                    <dt>Session ID</dt>
+                    <dd className="mono">
+                      {detail.session_id || "Unavailable"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Completed</dt>
+                    <dd>{date(selectedEntry.ts_ms)}</dd>
+                  </div>
+                  <div>
+                    <dt>Policy action</dt>
+                    <dd>
+                      {readable(detail.action || detail.decision?.action)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Risk</dt>
+                    <dd>
+                      <Badge risk={detail.risk} />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Signature</dt>
+                    <dd>
+                      {selectedEntry.payload?.signature
+                        ? "Attached · not verified here"
+                        : "Unavailable"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Record hash</dt>
+                    <dd className="mono hash">
+                      {selectedEntry.entry_hash || "Unavailable"}
+                    </dd>
+                  </div>
+                </dl>
+                <button
+                  className="button secondary full-width"
+                  onClick={() => openRecord(selectedEntry)}
+                >
+                  {active ? "Open live session" : "Open verdict"}
+                  <Icon name="arrow" size={16} />
+                </button>
+              </div>
+            </aside>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app">
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
+      <header className="app-header">
+        <button
+          className="brand"
+          onClick={() => setPage("Dashboard")}
+          aria-label="Voice Integrity home"
+        >
+          <span className="brand-mark">
+            <Icon name="wave" size={21} />
+          </span>
+          <span>Voice Integrity</span>
+        </button>
+        <nav aria-label="Main navigation">
+          {pages.map((item) => (
+            <button
+              key={item}
+              className={`nav-tab ${page === item ? "active" : ""}`}
+              aria-current={page === item ? "page" : undefined}
+              onClick={() => setPage(item)}
+            >
+              {item}
+            </button>
+          ))}
+        </nav>
+        <div className="header-status">
+          <button
+            className="button secondary"
+            disabled={active || busy}
+            onClick={() => window.location.assign("/call")}
+          >
+            Two-device call
+          </button>
+          <span
+            className={`connection-dot ${canAccess && health ? "connected" : ""}`}
+          />
+          <span>
+            {canAccess && health
+              ? "Workspace connected"
+              : "Backend unavailable"}
+          </span>
+          <span className="avatar" aria-label="Operator workspace">
+            <Icon name="user" size={17} />
+          </span>
+        </div>
+      </header>
+      {canAccess && demo && (
+        <div className="demo-strip">
+          <span className="badge-dot" />
+          Demo · simulated detector
+          <span className="demo-detail">
+            Scores demonstrate the workflow and are not detection evidence.
+          </span>
+        </div>
+      )}
+      <main id="main">
+        {!operator ? (
+          <section className="panel access-panel">
+            <Empty icon="shield" title="Connecting to your workspace">
+              Checking backend and operator access.
+            </Empty>
+            {authError && (
+              <>
+                <p className="notice error" role="alert">
+                  {authError}
+                </p>
+                <button
+                  className="button primary"
+                  onClick={() => {
+                    setAuthError("");
+                    setAttempt((value) => value + 1);
+                  }}
+                >
+                  Retry connection
+                </button>
+              </>
+            )}
+          </section>
+        ) : !canAccess ? (
+          <section className="panel access-panel">
+            <span className="empty-icon">
+              <Icon name="shield" size={28} />
+            </span>
+            <h1>Welcome to your workspace</h1>
+            <p>Enter the operator code from your demo launcher to continue.</p>
+            <form onSubmit={signIn}>
+              <label htmlFor="operator-code">Operator code</label>
+              <input
+                id="operator-code"
+                type="password"
+                required
+                autoComplete="current-password"
+                maxLength={256}
+                value={operatorCode}
+                onChange={(event) => setOperatorCode(event.target.value)}
+                disabled={authBusy}
+              />
+              {authError && (
+                <p className="notice error" role="alert">
+                  {authError}
+                </p>
+              )}
+              <button
+                className="button primary"
+                disabled={authBusy || !operatorCode.trim()}
+              >
+                {authBusy ? "Signing in…" : "Sign in"}
+              </button>
+            </form>
+          </section>
+        ) : page === "Dashboard" ? (
+          renderDashboard()
+        ) : page === "Live Call" ? (
+          renderLive()
+        ) : page === "Verdict" ? (
+          renderVerdict()
+        ) : (
+          renderAudit()
+        )}
+      </main>
+      <footer className="app-footer">
+        <Icon name="wave" size={14} />
+        <span>Voice Integrity</span>
+        <span>Clarity in every conversation.</span>
+      </footer>
+      {newSession && (
+        <Modal
+          title="Start a new voice session"
+          onClose={() => {
+            if (!busy) setNewSession(false);
+          }}
+        >
+          <p className="modal-description">
+            Bring your conversation into focus with live voice analysis.
+          </p>
+          <div className="source-choice">
+            <span className="empty-icon">
+              <Icon name="mic" size={27} />
+            </span>
+            <h3>Use your microphone</h3>
+            <p>
+              Your browser will ask for microphone access. Audio is sent to your
+              configured analysis backend.
+            </p>
+            <Badge tone="">Live audio source</Badge>
+          </div>
+          {demo && (
+            <p className="notice">
+              This backend uses a simulated detector. Scores are for
+              demonstration.
+            </p>
+          )}
+          {error && (
+            <p className="notice error" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="modal-actions">
+            <button
+              className="button secondary"
+              disabled={busy}
+              onClick={() => setNewSession(false)}
+            >
+              Cancel
+            </button>
+            <button
+              className="button primary"
+              disabled={busy}
+              onClick={startSession}
+            >
+              <Icon name="mic" size={17} />
+              {busy ? "Connecting…" : "Start session"}
+            </button>
+          </div>
+        </Modal>
+      )}
+      {gate && (
+        <Modal
+          title="High synthetic-speech risk"
+          onClose={() => setGate(false)}
+        >
+          <p className="modal-description">
+            Pause sensitive actions and independently verify the caller. The
+            risk assessment does not automatically end your session.
+          </p>
+          <div className="notice error">
+            {score?.decision?.reason ||
+              "The policy recommends gating sensitive actions."}
+          </div>
+          <div className="modal-actions">
+            <button className="button secondary" onClick={() => setGate(false)}>
+              Continue monitoring
+            </button>
+            <button
+              className="button primary"
+              onClick={endSession}
+              disabled={busy}
+            >
+              End session
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );
 }
 
-    return (
-      <div className="page">
-        <div className="page-header">
-          <div>
-            <h1>Dashboard</h1>
-            <p>Voice Integrity monitoring overview</p>
-          </div>
-
-          <button
-  className="primary-button"
-  onClick={async () => {
-    console.log("1. BUTTON CLICKED");
-
-    try {
-      console.log("2. CALLING BACKEND");
-
-      setStartingCall(true);
-      setBackendError("");
-
-      setLiveData(null);
-      setVerdict(null);
-      setShowGateWarning(false);
-      previousActionRef.current = null;
-
-      const session = await createSession();
-
-console.log("3. SESSION CREATED:", session);
-
-setSessionId(session.session_id);
-
-const ws = connectToStream(
-  session.session_id,
-  (data) => {
-  console.log("LIVE DATA:", data);
-
-  if (data.type === "verdict") {
-    console.log("FINAL VERDICT:", data);
-    setVerdict(data);
-    setActivePage("Verdict");
-    return;
-  }
-
-  setLiveData(data);
-
-  const action = data.decision?.action;
-
-  if (action === "GATE" && previousActionRef.current !== "GATE") {
-    setShowGateWarning(true);
-  }
-
-  previousActionRef.current = action;
-},
-  (error) => {
-    console.error("STREAM ERROR:", error);
-  },
-  () => {
-    console.log("STREAM CLOSED");
-  }
-);
-
-setSocket(ws);
-
-try {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: true,
-  });
-
-  setMicStream(stream);
-  setMicActive(true);
-
-  console.log("Microphone connected");
-
-  const audioContext = new AudioContext({
-  sampleRate: 16000,
-});
-audioContextRef.current = audioContext;
-
-const source = audioContext.createMediaStreamSource(stream);
-
-const analyser = audioContext.createAnalyser();
-analyser.fftSize = 128;
-analyser.smoothingTimeConstant = 0.75;
-
-analyserRef.current = analyser;
-
-const processor = audioContext.createScriptProcessor(4096, 1, 1);
-
-processorRef.current = processor;
-
-processor.onaudioprocess = (event) => {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return;
-  }
-
-  const input = event.inputBuffer.getChannelData(0);
-
-  const output = new Int16Array(input.length);
-
-  for (let i = 0; i < input.length; i++) {
-    const sample = Math.max(-1, Math.min(1, input[i]));
-    output[i] = sample < 0 ? sample * 32768 : sample * 32767;
-  }
-
-  ws.send(output.buffer);
-};
-
-source.connect(analyser);
-analyser.connect(processor);
-processor.connect(audioContext.destination);
-
-const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-const updateWaveform = () => {
-  analyser.getByteFrequencyData(dataArray);
-
-  const bars = Array.from({ length: 60 }, (_, index) => {
-    const sourceIndex = Math.floor(
-      (index / 60) * dataArray.length
-    );
-
-    const value = dataArray[sourceIndex] || 0;
-
-    return Math.max(8, Math.min(100, value * 0.8));
-  });
-
-  setWaveformData(bars);
-
-  animationRef.current = requestAnimationFrame(updateWaveform);
-};
-
-updateWaveform();
-
-console.log("Audio streaming started");
-} catch (error) {
-  console.error("Microphone error:", error);
-  setBackendError("Microphone permission was denied.");
-}
-
-setActivePage("Live Call");
-    } catch (error) {
-      console.error("BACKEND ERROR:", error);
-      setBackendError(error.message);
-    } finally {
-      setStartingCall(false);
-    }
-  }}
->
-  <span>＋</span>
-  {startingCall ? "Starting..." : "Start New Call"}
-</button>
-
-{backendError && (
-  <div className="backend-error">
-    {backendError}
-  </div>
-)}
-
-        </div>
-
-        <div className="overview-grid">
-  <div
-    className={`card main-risk ${
-      liveData?.risk?.toLowerCase() || ""
-    }`}
-  >
-    <div className="card-label">CURRENT RISK</div>
-
-    <div className="risk-number-row">
-      <span className="dashboard-risk">
-        {liveData
-          ? liveData.risk_score != null
-            ? Math.round(liveData.risk_score)
-            : Math.round((liveData.spoof_probability || 0) * 100)
-          : "—"}
-      </span>
-
-      <span className="risk-out-of">/ 100</span>
-    </div>
-
-    <div className="risk-safe">
-      {!liveData
-        ? "NO ACTIVE CALL"
-        : liveData.risk === "GREEN"
-        ? "LOW RISK"
-        : liveData.risk === "AMBER"
-        ? "ELEVATED RISK"
-        : liveData.risk === "RED"
-        ? "HIGH RISK"
-        : "ANALYZING"}
-    </div>
-
-    <div className="risk-bar">
-      <div
-        className={`risk-fill ${
-          liveData?.risk?.toLowerCase() || ""
-        }`}
-        style={{
-          width: `${
-            liveData
-              ? Math.min(
-                  100,
-                  liveData.risk_score != null
-                    ? liveData.risk_score
-                    : (liveData.spoof_probability || 0) * 100
-                )
-              : 0
-          }%`,
-        }}
-      ></div>
-    </div>
-
-    <div className="risk-description">
-      {!liveData
-        ? "Start a call to begin voice integrity monitoring."
-        : liveData.risk === "GREEN"
-        ? "Current call is within the safe operating range."
-        : liveData.risk === "AMBER"
-        ? "Additional verification is recommended."
-        : liveData.risk === "RED"
-        ? "Sensitive actions should be gated until verification."
-        : "Voice analysis is currently in progress."}
-    </div>
-  </div>
-
-  <div className="card">
-    <div className="card-label">SPOOF PROBABILITY</div>
-
-    <div className="metric-number">
-      {liveData?.spoof_probability != null
-        ? `${Math.round(liveData.spoof_probability * 100)}%`
-        : "—"}
-    </div>
-
-    <div className="metric-caption">
-      {liveData
-        ? "Synthetic speech indicators"
-        : "Waiting for voice analysis"}
-    </div>
-  </div>
-
-  <div className="card">
-    <div className="card-label">SPEAKER</div>
-
-    <div
-      className={`metric-number ${
-        liveData?.speaker_status === "VERIFIED"
-          ? "green-text"
-          : ""
-      }`}
-    >
-      {liveData?.speaker_status || "—"}
-    </div>
-
-    <div className="metric-caption">
-      {liveData?.speaker_similarity != null
-        ? `Identity confidence: ${Math.round(
-            liveData.speaker_similarity * 100
-          )}%`
-        : liveData
-        ? "Speaker not enrolled"
-        : "Waiting for speaker verification"}
-    </div>
-  </div>
-
-  <div className="card">
-    <div className="card-label">LIVENESS</div>
-
-    <div className="metric-number">
-      {liveData?.liveness_score != null
-        ? `${Math.round(liveData.liveness_score * 100)}%`
-        : "—"}
-    </div>
-
-    <div className="metric-caption">
-      {liveData
-        ? "Conversational liveness"
-        : "Waiting for voice analysis"}
-    </div>
-  </div>
-</div>
-
-        <div className="dashboard-columns">
-          <div className="card">
-  <div className="card-header">
-    <div>
-      <div className="card-label">LIVE ACTIVITY</div>
-      <h2>Recent Analysis</h2>
-    </div>
-
-    <span className="live-label">
-      {liveData ? "● LIVE" : "○ IDLE"}
-    </span>
-  </div>
-
-  <div className="activity-list">
-    {!liveData ? (
-      <div className="activity-item">
-        <span className="activity-dot"></span>
-
-        <div>
-          <strong>No active call</strong>
-          <p>Start a call to begin monitoring</p>
-        </div>
-
-        <span>—</span>
-      </div>
-    ) : (
-      <>
-        <div className="activity-item">
-          <span
-            className={`activity-dot ${
-              liveData.risk === "RED"
-                ? "red"
-                : liveData.risk === "AMBER"
-                ? "amber"
-                : "green"
-            }`}
-          ></span>
-
-          <div>
-            <strong>Voice analysis running</strong>
-            <p>
-              Risk: {liveData.risk || "ANALYZING"}
-              {liveData.spoof_probability != null
-                ? ` · Spoof ${Math.round(
-                    liveData.spoof_probability * 100
-                  )}%`
-                : ""}
-            </p>
-          </div>
-
-          <span>Now</span>
-        </div>
-
-        <div className="activity-item">
-          <span className="activity-dot green"></span>
-
-          <div>
-            <strong>
-              {liveData.speaker_status || "Speaker analysis"}
-            </strong>
-
-            <p>
-              {liveData.speaker_similarity != null
-                ? `Identity confidence ${Math.round(
-                    liveData.speaker_similarity * 100
-                  )}%`
-                : "Speaker verification status updated"}
-            </p>
-          </div>
-
-          <span>Live</span>
-        </div>
-
-        <div className="activity-item">
-          <span className="activity-dot"></span>
-
-          <div>
-            <strong>Inference active</strong>
-
-            <p>
-              {liveData.inference_ms != null
-                ? `Latest inference ${Math.round(
-                    liveData.inference_ms
-                  )} ms`
-                : "Processing audio stream"}
-            </p>
-          </div>
-
-          <span>Live</span>
-        </div>
-      </>
-    )}
-  </div>
-</div>
-
-          <div className="card policy-card">
-            <div className="card-label">RISK POLICY</div>
-            <h2>Response thresholds</h2>
-
-            <div className="policy-row">
-              <span className="policy-indicator green-bg"></span>
-              <div>
-                <strong>0–40</strong>
-                <p>Proceed</p>
-              </div>
-            </div>
-
-            <div className="policy-row">
-              <span className="policy-indicator amber-bg"></span>
-              <div>
-                <strong>40–75</strong>
-                <p>Challenge</p>
-              </div>
-            </div>
-
-            <div className="policy-row">
-              <span className="policy-indicator red-bg"></span>
-              <div>
-                <strong>75–100</strong>
-                <p>Gate sensitive action</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-icon">V</div>
-          <div>
-            <div className="brand-name">VOICE</div>
-            <div className="brand-subtitle">INTEGRITY</div>
-          </div>
-        </div>
-
-        <div className="sidebar-section">
-          <div className="sidebar-label">MONITORING</div>
-
-          {pages.map((page) => (
-            <button
-              key={page}
-              className={
-                activePage === page ? "nav-item active" : "nav-item"
-              }
-              onClick={() => setActivePage(page)}
-            >
-              <span className="nav-icon">
-                {page === "Dashboard" && "⌂"}
-                {page === "Live Call" && "◉"}
-                {page === "Verdict" && "✓"}
-                {page === "Audit" && "≡"}
-              </span>
-              {page}
-            </button>
-          ))}
-        </div>
-
-        <div className="sidebar-bottom">
-          <div className="system-status">
-            <span className="status-dot"></span>
-            <div>
-              <strong>System Online</strong>
-              <span>Backend connected</span>
-            </div>
-          </div>
-
-          <div className="model-info">
-            <span>MODEL</span>
-            <strong>XLS-R + AASIST</strong>
-          </div>
-        </div>
-      </aside>
-
-      <main className="main-content">
-        {!operator ? <section className="card operator-access" aria-live="polite">
-          <h1>Connecting to backend</h1>
-          {authError ? <>
-            <p className="operator-error" role="alert">{authError}</p>
-            <button className="primary-button" onClick={() => { setAuthError(""); setAuthAttempt((attempt) => attempt + 1); }}>Retry connection</button>
-          </> : <p>Checking operator access…</p>}
-        </section> : operator.online_mode && !operator.authenticated ? <section className="card operator-access">
-          <div className="card-label">OPERATOR ACCESS</div>
-          <h1>Sign in</h1>
-          <p>Enter the operator access code printed by the running demo launcher.</p>
-          <form onSubmit={signIn}>
-            <label htmlFor="operator-code">Operator code</label>
-            <input id="operator-code" type="password" autoComplete="current-password" required maxLength={256}
-              value={operatorCode} onChange={(event) => setOperatorCode(event.target.value)} disabled={authBusy} />
-            {authError && <p className="operator-error" role="alert">{authError}</p>}
-            <button className="primary-button" type="submit" disabled={authBusy || !operatorCode.trim()}>
-              {authBusy ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
-        </section> : renderPage()}
-      </main>
-      {showGateWarning && (
-  <div className="gate-overlay">
-    <div className="gate-popup">
-      <div className="gate-icon">!</div>
-
-      <div className="gate-popup-label">GATE ACTION</div>
-
-      <h2>Highly Suspicious Call Detected</h2>
-
-      <p>
-        The call has reached a high synthetic-speech risk level.
-        Sensitive actions should not proceed based on this call
-        without independent verification.
-      </p>
-
-      <div className="gate-warning-text">
-        It is strongly recommended to end the call if the caller
-        cannot be independently verified.
-      </div>
-
-      <div className="gate-popup-actions">
-        <button
-          className="gate-end-btn"
-          onClick={async () => {
-            if (processorRef.current) {
-              processorRef.current.disconnect();
-              processorRef.current = null;
-            }
-
-            if (audioContextRef.current) {
-              await audioContextRef.current.close();
-              audioContextRef.current = null;
-            }
-
-            if (micStream) {
-              micStream.getTracks().forEach((track) => track.stop());
-            }
-
-            setMicActive(false);
-
-            if (socket && socket.readyState === WebSocket.OPEN) {
-              socket.send("end");
-            }
-
-            setShowGateWarning(false);
-            setLiveData(null);
-            setActivePage("Dashboard");
-          }}
-        >
-          End Call
-        </button>
-
-        <button
-          className="gate-dismiss-btn"
-          onClick={() => setShowGateWarning(false)}
-        >
-          Dismiss Warning
-        </button>
-      </div>
-    </div>
-  </div>
-)}
-    </div>
+export default function RootApp() {
+  return window.location.pathname === "/call" ||
+    window.location.pathname.startsWith("/join/") ? (
+    <CallWorkspace />
+  ) : (
+    <App />
   );
 }
-
-export default App;
