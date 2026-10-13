@@ -237,7 +237,6 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
             </p>
           </div>
         </div>
-        {embedded && access?.online_mode && access.authenticated && <button className="button secondary" disabled={active || starting} onClick={signOut}>Sign out</button>}
         {error && (
           <p className="notice error" role="alert">
             {error}
@@ -338,12 +337,11 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
               )}
 
                   {!invite && !data.inviteUrl && <p className="subtle">Create a call to get a private invitation link and QR code.</p>}
-                                <p>
-                Connection route:{" "}
-                <span aria-label="Connection route">
-                  {data.connection?.route || "Unknown"}
-                </span>
-              </p>
+                                {["Direct", "Relayed"].includes(data.connection?.route) && (
+                    <p>
+                      Connection route: <span aria-label="Connection route">{data.connection.route}</span>
+                    </p>
+                  )}
 
                 </div>
                 <div className="panel-footnote">Share invitations only with your intended caller.</div>

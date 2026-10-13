@@ -4,6 +4,7 @@ import {
   checkBackend,
   checkOperator,
   loginOperator,
+  logoutOperator,
   getAudit,
   verifyVerdict,
 } from "./services/api";
@@ -340,6 +341,21 @@ function App() {
     }
   }
 
+  async function signOut() {
+    if (active || busy || callBusy || authBusy) return;
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      await logoutOperator();
+      window.dispatchEvent(new Event("vif:operator-auth-required"));
+      setAuthError("");
+      setOperatorCode("");
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
   function refreshAudit() {
     setAuditBusy(true);
     setAuditVersion((value) => value + 1);
@@ -1351,6 +1367,13 @@ function App() {
               ? "Workspace connected"
               : "Backend unavailable"}
           </span>
+          {operator?.online_mode && operator.authenticated && (
+            <button className="button secondary" onClick={signOut}
+              disabled={active || busy || callBusy || authBusy}
+              title={active || busy || callBusy ? "End the current session before signing out" : undefined}>
+              {authBusy ? "Signing out…" : "Sign out"}
+            </button>
+          )}
           <span className="avatar" aria-label="Operator workspace">
             <Icon name="user" size={17} />
           </span>
@@ -1365,6 +1388,7 @@ function App() {
           </span>
         </div>
       )}
+      {canAccess && authError && <p className="notice error" role="alert">{authError}</p>}
       <main id="main">
         {!operator ? (
           <section className="panel access-panel">
