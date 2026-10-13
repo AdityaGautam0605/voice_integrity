@@ -79,6 +79,62 @@ class TestHealth:
     def test_metrics_available(self, client):
         assert client.get("/metrics").status_code == 200
 
+    def test_historical_integrity_is_separate_from_freshness(self, client):
+        from vif.common.types import VerdictPayload
+        payload = VerdictPayload(session_id="historical", spoof_probability=.1, risk="GREEN", timestamp=1)
+        signed = server.state.signer.sign(payload).model_dump(mode="json")
+        result = client.post("/v1/verdict/verify", json=signed).json()
+        assert result["signature_valid"] is True
+        assert result["fresh"] is False
+        assert result["valid"] is False
+        signed["payload"]["spoof_probability"] = .9
+        assert client.post("/v1/verdict/verify", json=signed).json()["signature_valid"] is False
+
+    def test_audit_search_reaches_beyond_first_page(self, client):
+        from vif.common.types import VerdictPayload
+        for i in range(65):
+            signed = server.state.signer.sign(VerdictPayload(session_id=f"record-{i:03}", spoof_probability=.1, risk="GREEN"))
+            server.state.audit.append(signed)
+        first = client.get("/v1/audit").json()
+        assert len(first["entries"]) == 50 and first["has_more"]
+        second = client.get("/v1/audit?offset=50").json()
+        assert len(second["entries"]) == 15 and not second["has_more"]
+        assert first["entries"][0]["seq"] > second["entries"][0]["seq"]
+        found = client.get("/v1/audit?q=record-000&risk=GREEN").json()
+        assert found["total"] == 1
+        assert client.get("/v1/audit?limit=0").status_code == 422
+
+    def test_reference_audio_enrollment_and_revocation(self, client):
+        import base64
+        sid = client.post("/v1/session", json={}).json()["session_id"]
+        body = {"speaker_id": "trusted-speaker", "pcm_b64": base64.b64encode(pcm_frame(64000)).decode()}
+        result = client.post(f"/v1/enroll/{sid}/audio", json=body)
+        assert result.status_code == 200, result.text
+        assert server.state.sessions[sid].speaker_id == "trusted-speaker"
+        assert client.post(f"/v1/enroll/{sid}/revoke?speaker_id=trusted-speaker").status_code == 200
+        assert server.state.sessions[sid].speaker_id is None
+        body["pcm_b64"] = base64.b64encode(silent_frame(64000)).decode()
+        assert client.post(f"/v1/enroll/{sid}/audio", json=body).status_code == 422
+        assert client.post("/v1/enroll/missing/audio", json=body).status_code == 404
+
+    def test_agent_reference_audio_does_not_enter_spoof_buffer(self, client):
+        import base64
+        sid = client.post("/v1/session", json={"enable_liveness": True}).json()["session_id"]
+        assert server.state.sessions[sid].liveness is not None
+        assert server.state.sessions[sid].agent_vad is not server.state.sessions[sid].vad
+        with client.websocket_connect(f"/v1/stream/{sid}") as ws:
+            for _ in range(30):
+                ws.send_json({"type": "agent_audio", "pcm_b64": base64.b64encode(silent_frame()).decode()})
+            for _ in range(150):
+                ws.send_json({"type": "agent_audio", "pcm_b64": base64.b64encode(pcm_frame()).decode()})
+            ws.send_text("end")
+            while True:
+                message = ws.receive_json()
+                if message["type"] == "verdict":
+                    assert message["payload"]["windows_scored"] == 0
+                    assert message["payload"]["speech_seconds"] == 0
+                    break
+
 
 class TestSession:
     def test_create_returns_audio_geometry(self, client):

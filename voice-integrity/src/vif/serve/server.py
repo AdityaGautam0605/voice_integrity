@@ -29,6 +29,8 @@ text frames are control messages.
 # query parameter.
 
 import asyncio
+import base64
+import json
 import contextlib
 import os
 import time
@@ -261,6 +263,7 @@ def create_app():
     class CreateSession(BaseModel):
         speaker_id: str | None = None
         demo_scenario: str | None = None
+        enable_liveness: bool = False
 
     @app.post("/v1/session", response_model=SessionInfo)
     async def create_session(
@@ -289,14 +292,19 @@ def create_app():
         # Off the event loop: even loading the packaged model would stall every
         # live stream for as long as it takes.
         vad = await asyncio.to_thread(build_vad, state.vad_kind, audio.vad_frame)
+        session_config = state.config.model_copy(deep=True)
+        if body and body.enable_liveness:
+            session_config.model.liveness.enabled = True
         state.sessions[session_id] = CallSession(
             session_id=session_id,
-            config=state.config,
+            config=session_config,
             detector=detector,
             vad=vad,
             calibrator=calibrator,
             speaker_id=(body.speaker_id if body else None),
             vault=state.vault,
+            agent_vad=(await asyncio.to_thread(build_vad, state.vad_kind, audio.vad_frame)
+                       if session_config.model.liveness.enabled else None),
         )
         return SessionInfo(
             session_id=session_id,
@@ -369,6 +377,28 @@ def create_app():
                 text = message.get("text")
                 if text in ("close", "end", "finish"):
                     break
+                if text and session.liveness is not None:
+                    try:
+                        if len(text) > 180000:
+                            raise ValueError("agent audio frame too large")
+                        control = json.loads(text)
+                        if control.get("type") == "transport_stats":
+                            rtt = control.get("rtt_ms")
+                            if rtt is not None and (not isinstance(rtt, (int, float)) or not np.isfinite(rtt) or not 0 <= rtt <= 60000):
+                                raise ValueError("invalid RTT")
+                            session.liveness.set_rtt(rtt)
+                            continue
+                        if control.get("type") != "agent_audio":
+                            continue
+                        raw = base64.b64decode(control["pcm_b64"], validate=True)
+                        if not raw or len(raw) % 4 or len(raw) > 64000:
+                            raise ValueError("invalid agent audio frame")
+                        pcm = np.frombuffer(raw, dtype="<f4").copy()
+                        if not np.all(np.isfinite(pcm)):
+                            raise ValueError("invalid agent samples")
+                        await session.handle_frame(AudioFrame(side=Side.AGENT, pcm=pcm, timestamp_ns=now_ns()))
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        await ws.send_json({"type": "error", "detail": "Invalid reference audio frame"})
 
         except WebSocketDisconnect:
             log.info("client disconnected from session %s", session_id)
@@ -393,6 +423,42 @@ def create_app():
     class EnrolRequest(BaseModel):
         speaker_id: str
         embedding_b64: str
+
+    class ReferenceAudio(BaseModel):
+        speaker_id: str
+        pcm_b64: str
+
+    @app.post("/v1/enroll/{session_id}/audio")
+    async def enroll_audio(session_id: str, req: ReferenceAudio, authorization: str | None = Header(default=None)):
+        """Enroll a trusted 16 kHz mono float32 reference, not the suspect live voice."""
+        require_token(authorization)
+        session = state.sessions.get(session_id)
+        if session is None:
+            raise HTTPException(404, "No active session")
+        if state.vault is None:
+            raise HTTPException(503, "Speaker branch is disabled")
+        if not req.speaker_id.strip() or len(req.speaker_id) > 128:
+            raise HTTPException(422, "Speaker ID must contain 1–128 characters")
+        try:
+            if len(req.pcm_b64) > 854000:
+                raise ValueError("Reference exceeds 10 seconds")
+            raw = base64.b64decode(req.pcm_b64, validate=True)
+            pcm = np.frombuffer(raw, dtype="<f4").copy()
+            if not 48000 <= pcm.size <= 160000 or not np.all(np.isfinite(pcm)) or np.max(np.abs(pcm)) > 1:
+                raise ValueError("Reference must be 3–10 seconds of finite 16 kHz mono audio")
+            if np.sqrt(np.mean(pcm ** 2)) < .001:
+                raise ValueError("Reference audio is silent")
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        try:
+            embedding = await asyncio.to_thread(session.detector.embed_speaker, pcm)
+        finally:
+            pcm.fill(0)
+        if embedding is None:
+            raise HTTPException(503, "Speaker model is unavailable")
+        record = state.vault.enrol(req.speaker_id.strip(), embedding)
+        session.speaker_id = record.speaker_id
+        return {"status": "ENROLLED", "speaker_id": record.speaker_id, "demo_mode": isinstance(session.detector, StubDetector)}
 
     @app.post("/v1/enroll/{session_id}")
     async def enroll(
@@ -429,6 +495,9 @@ def create_app():
         if state.vault is None:
             raise HTTPException(status_code=503, detail="speaker branch is disabled")
         state.vault.revoke(speaker_id)
+        session = state.sessions.get(session_id)
+        if session is not None and session.speaker_id == speaker_id:
+            session.speaker_id = None
         return {"status": "REVOKED", "speaker_id": speaker_id}
 
     # -- verdict -----------------------------------------------------------
@@ -454,21 +523,28 @@ def create_app():
         if state.verifier is None:
             raise HTTPException(status_code=503, detail="verdict signing is disabled")
         ok, reason = state.verifier.verify(verdict, check_replay=False)
-        return {"valid": ok, "reason": reason}
+        signature_valid, signature_reason = state.verifier.verify(verdict, check_replay=False, check_freshness=False)
+        return {"valid": ok, "reason": reason, "signature_valid": signature_valid,
+                "signature_reason": signature_reason, "fresh": ok if signature_valid else None}
 
     # -- audit -------------------------------------------------------------
 
     @app.get("/v1/audit")
-    async def audit(limit: int = 50, authorization: str | None = Header(default=None)):
+    async def audit(limit: int = 50, offset: int = 0, q: str = "", risk: str = "", authorization: str | None = Header(default=None)):
         require_token(authorization)
+        if not 1 <= limit <= 200 or offset < 0 or len(q) > 200 or risk not in ("", "GREEN", "AMBER", "RED"):
+            raise HTTPException(422, "Invalid audit page or filter")
         if state.audit is None:
             raise HTTPException(status_code=503, detail="audit log is disabled")
         ok, reason = state.audit.verify_chain()
+        entries, total = state.audit.page(limit, offset, q, risk)
         return {
             "chain_valid": ok,
             "reason": reason,
             "count": state.audit.count(),
-            "entries": [e.__dict__ for e in state.audit.entries(limit)],
+            "entries": [e.__dict__ for e in entries],
+            "total": total, "offset": offset, "limit": limit,
+            "has_more": offset + len(entries) < total,
         }
 
     return app

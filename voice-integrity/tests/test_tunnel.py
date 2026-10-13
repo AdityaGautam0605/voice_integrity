@@ -136,9 +136,8 @@ def test_public_site_routes_assets_cookie_auth_websockets_and_private_files(clie
     (dist / "index.html").write_text("<html>Demo</html>")
     (dist / "assets/app.js").write_text("// built app")
     (tmp_path / "private.key").write_text("private-content")
-    (dist / "assets/leak.js").symlink_to(tmp_path / "private.key")
     with TestClient(DemoSite(client.app, dist), base_url=ORIGIN) as site:
-        for path in ("/", "/join/room-token", "/assets/app.js"):
+        for path in ("/", "/call", "/join/room-token", "/assets/app.js"):
             response = site.get(path)
             assert response.status_code == 200
             assert response.headers["Referrer-Policy"] == "no-referrer"
@@ -160,3 +159,17 @@ def test_public_site_routes_assets_cookie_auth_websockets_and_private_files(clie
         with pytest.raises(WebSocketDisconnect):
             with site.websocket_connect(f"{ws_origin}/api/v1/stream/private", headers={"Origin": "https://evil.test"}):
                 pass
+
+
+def test_public_site_refuses_symlinks(client, tmp_path):
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (tmp_path / "private.key").write_text("private-content")
+    try:
+        (dist / "assets/leak.js").symlink_to(tmp_path / "private.key")
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is not available")
+        raise
+    with TestClient(DemoSite(client.app, dist), base_url=ORIGIN) as site:
+        assert site.get("/assets/leak.js").status_code == 404

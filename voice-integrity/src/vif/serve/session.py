@@ -88,11 +88,13 @@ class CallSession:
         calibrator=None,
         speaker_id: str | None = None,
         vault=None,
+        agent_vad=None,
     ):
         self.session_id = session_id
         self.config = config
         self.detector = detector
         self.vad = vad
+        self.agent_vad = agent_vad or vad
         self.on_message = on_message
         self.speaker_id = speaker_id
         self.vault = vault
@@ -165,7 +167,8 @@ class CallSession:
             self._stage_ts[side] = chunk_ts + chunk_ns
             self._media_ns = max(self._media_ns, chunk_ts + chunk_ns)
 
-            speaking = self.vad.is_speech(chunk, audio_cfg.vad_threshold)
+            gate = self.agent_vad if side == Side.AGENT else self.vad
+            speaking = gate.is_speech(chunk, audio_cfg.vad_threshold)
 
             if speaking != self._in_speech[side]:
                 self._in_speech[side] = speaking

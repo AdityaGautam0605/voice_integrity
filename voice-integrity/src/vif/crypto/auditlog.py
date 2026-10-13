@@ -261,3 +261,18 @@ class AuditLog:
     def count(self) -> int:
         with self._lock:
             return int(self._conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0])
+
+    def page(self, limit: int = 50, offset: int = 0, query: str = "", risk: str = "") -> tuple[list[LogEntry], int]:
+        """Search all records, then paginate newest first using bound parameters."""
+        where = ("WHERE (? = '' OR instr(lower(coalesce(json_extract(payload, '$.payload.session_id'), '') || ' ' || "
+                 "coalesce(json_extract(payload, '$.payload.action'), '') || ' ' || "
+                 "coalesce(json_extract(payload, '$.payload.risk'), '')), lower(?)) > 0) "
+                 "AND (? = '' OR json_extract(payload, '$.payload.risk') = ?)")
+        args = (query, query, risk, risk)
+        with self._lock:
+            count = self._conn.execute("SELECT COUNT(*) FROM entries " + where, args).fetchone()[0]
+            rows = self._conn.execute(
+                "SELECT seq, prev_hash, entry_hash, payload, ts_ms FROM entries " + where +
+                " ORDER BY seq DESC LIMIT ? OFFSET ?", (*args, limit, offset),
+            ).fetchall()
+        return [LogEntry(seq=r[0], prev_hash=r[1], entry_hash=r[2], payload=json.loads(r[3]), ts_ms=r[4]) for r in rows], count

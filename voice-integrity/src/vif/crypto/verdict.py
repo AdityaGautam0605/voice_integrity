@@ -154,7 +154,7 @@ class VerdictVerifier:
         self.max_age_ms = max_age_ms
         self._seen_nonces: set[str] = set()
 
-    def verify(self, verdict: Verdict, check_replay: bool = True) -> tuple[bool, str]:
+    def verify(self, verdict: Verdict, check_replay: bool = True, *, check_freshness: bool = True) -> tuple[bool, str]:
         """Return (ok, reason).
 
         Never raises.  A verifier that throws is a verifier a caller wraps in
@@ -174,9 +174,9 @@ class VerdictVerifier:
             return False, f"malformed signature: {exc}"
 
         age_ms = int(time.time() * 1000) - verdict.payload.timestamp
-        if age_ms > self.max_age_ms:
+        if check_freshness and age_ms > self.max_age_ms:
             return False, f"verdict is stale ({age_ms / 1000:.0f}s old) - possible replay"
-        if age_ms < -60_000:
+        if check_freshness and age_ms < -60_000:
             return False, "verdict timestamp is in the future - clock skew or forgery"
 
         if check_replay:

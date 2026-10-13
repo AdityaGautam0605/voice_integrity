@@ -68,7 +68,7 @@ class DemoSite:
             return await send({"type": "websocket.close", "code": 1008})
         if scope["method"] not in ("GET", "HEAD"):
             return await Response(status_code=405)(scope, receive, secured)
-        if path in ("/", "/index.html") or re.fullmatch(r"/join/[A-Za-z0-9_-]+/?", path):
+        if path in ("/", "/call", "/index.html") or re.fullmatch(r"/join/[A-Za-z0-9_-]+/?", path):
             return await FileResponse(self.directory / "index.html")(scope, receive, secured)
         if path.startswith("/assets/") and not any(part.startswith(".") for part in path.split("/") if part):
             try:
