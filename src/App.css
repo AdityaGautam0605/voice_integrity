@@ -1472,3 +1472,16 @@ main,
 .call-mode-note { padding: 0 clamp(16px, 4vw, 64px); color: var(--muted); }
 [hidden] { display: none !important; }
 
+
+/* Both live modes share the workspace grid, panel and waveform styles. */
+.live-workspace .call-source-body { display: flex; flex-direction: column; gap: 18px; }
+.live-workspace .invitation { grid-template-columns: minmax(0, 1fr); margin: 0; }
+.live-workspace .invitation img { max-width: 100%; justify-self: center; }
+.live-workspace .call-setup + .panel { margin-top: 0; }
+.call-source-body label:has(input[type="checkbox"]) { display: flex; align-items: center; }
+.call-signal-list { display: grid; gap: 14px; grid-column: 1 / -1; }
+.call-audio-level { display: grid; gap: 8px; margin: 18px 0; font-size: 12px; }
+.call-audio-level meter { width: 100%; }
+.caller-workspace { grid-template-columns: minmax(210px, .85fr) minmax(0, 1.9fr); }
+@media (max-width: 1200px) and (min-width: 801px) { .call-signal-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 800px) { .caller-workspace { grid-template-columns: minmax(0, 1fr); } }

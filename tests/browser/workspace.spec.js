@@ -234,7 +234,7 @@ test("live microphone, streamed scores, gate alert and finalized verdict", async
     page.getByRole("heading", { name: "High synthetic-speech risk" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Continue monitoring" }).click();
-  await expect(page.locator(".signals-panel")).toContainText("91%");
+  await expect(page.locator(".signals-panel:visible")).toContainText("91%");
   await expect.poll(() => api.frames).toBeGreaterThan(0);
   await page.getByRole("button", { name: "Start manual check" }).click();
   await expect(
@@ -419,8 +419,8 @@ test("responsive layout adapts to narrow, landscape and ultrawide screens", asyn
       }
       if (title === "Live Call") await page.getByRole("button", { name: "Test my microphone", exact: true }).click();
       if (title === "Live Call" && width <= 800) {
-        const analysis = await page.locator(".analysis-panel").boundingBox();
-        const sources = await page.locator(".sources-panel").boundingBox();
+        const analysis = await page.locator(".analysis-panel:visible").boundingBox();
+        const sources = await page.locator(".sources-panel:visible").boundingBox();
         expect(analysis.y).toBeLessThan(sources.y);
       }
     }
@@ -482,7 +482,7 @@ test("lost local analysis releases the microphone and removes stale scores", asy
   await page
     .getByRole("button", { name: "Start session", exact: true })
     .click();
-  await expect(page.locator(".signals-panel")).toContainText("12%");
+  await expect(page.locator(".signals-panel:visible")).toContainText("12%");
   api.disconnect();
   await expect
     .poll(() =>
@@ -493,7 +493,7 @@ test("lost local analysis releases the microphone and removes stale scores", asy
       ),
     )
     .toBe(true);
-  await expect(page.locator(".signals-panel")).not.toContainText("12%");
+  await expect(page.locator(".signals-panel:visible")).not.toContainText("12%");
   await expect(
     page.getByText("No active session", { exact: true }),
   ).toBeVisible();
@@ -511,4 +511,28 @@ test("unified call defaults to another device and keeps microphone testing secon
   await page.getByRole('button', { name: 'Call another device', exact: true }).click();
   await page.setViewportSize({ width: 360, height: 800 });
   await noOverflow(page);
+});
+test("both live modes share panels and fit phone tablet and desktop screens", async ({ page }) => {
+  await fixture(page);
+  await page.goto('/call');
+  for (const width of [360, 900, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    for (const mode of ['Call another device', 'Test my microphone']) {
+      await page.getByRole('button', { name: mode, exact: true }).click();
+      const workspace = page.locator('.live-workspace:visible');
+      for (const title of ['Setup', 'Audio & controls', 'Analysis']) {
+        await expect(workspace.getByRole('heading', { name: title, exact: true })).toBeVisible();
+      }
+      await noOverflow(page);
+      const source = await workspace.locator('.sources-panel').boundingBox();
+      const audio = await workspace.locator('.analysis-panel').boundingBox();
+      const signals = await workspace.locator('.signals-panel').boundingBox();
+      if (width === 1440) {
+        expect(source.x).toBeLessThan(audio.x);
+        expect(audio.x).toBeLessThan(signals.x);
+      }
+      if (width === 360) expect(audio.y).toBeLessThan(source.y);
+      if (width === 1440) await page.screenshot({path: `test-results/shared-${mode === 'Call another device' ? 'call' : 'microphone'}.png`, fullPage: true});
+    }
+  }
 });

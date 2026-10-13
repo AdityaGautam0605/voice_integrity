@@ -1,3 +1,4 @@
+import AudioHistory from "./AudioHistory";
 import { useEffect, useRef, useState } from "react";
 import {
   checkBackend,
@@ -698,7 +699,7 @@ function App() {
       <div className="page live-page">
         {pageHeading(
           "Live Call",
-          "A closer look at the voice on the other end.",
+          "Test your microphone and review its live audio signals.",
           <Badge
             tone={active && analysisState !== "Unavailable" ? "green" : ""}
           >
@@ -713,7 +714,7 @@ function App() {
         <div className="live-workspace">
           <section className="panel sources-panel">
             <div className="panel-heading">
-              <h2>Sources</h2>
+              <h2>Setup</h2>
               <Icon name="mic" size={17} />
             </div>
             <div className="panel-body">
@@ -776,7 +777,7 @@ function App() {
           </section>
           <section className="panel analysis-panel">
             <div className="panel-heading">
-              <h2>Analysis</h2>
+              <h2>Audio & controls</h2>
               <span className="subtle">
                 {demo ? "Simulated detector" : "Live voice analysis"}
               </span>
@@ -803,62 +804,7 @@ function App() {
                     : "Start a session to see your audio here"}
                 </span>
               </div>
-              <div className="chart-card">
-                <div className="section-heading">
-                  <h3>Spoof probability</h3>
-                  <strong>{percent(score?.spoof_probability)}</strong>
-                </div>
-                <div className="chart">
-                  <div className="chart-labels">
-                    <span>100%</span>
-                    <span>50%</span>
-                    <span>0%</span>
-                  </div>
-                  <svg
-                    viewBox="0 0 500 150"
-                    preserveAspectRatio="none"
-                    role="img"
-                    aria-label="Spoof probability over recent analysis windows"
-                  >
-                    <path
-                      className="chart-grid"
-                      d="M0 1H500M0 75H500M0 149H500M100 0V150M200 0V150M300 0V150M400 0V150"
-                    />
-                    {history.length > 0 && (
-                      <polyline
-                        className="chart-line"
-                        points={history
-                          .map(
-                            (value, index) =>
-                              `${history.length === 1 ? 250 : (index / (history.length - 1)) * 500},${149 - value * 148}`,
-                          )
-                          .join(" ")}
-                      />
-                    )}
-                    {history.length === 1 && (
-                      <circle
-                        cx="250"
-                        cy={149 - history[0] * 148}
-                        r="3"
-                        fill="#8666cd"
-                      />
-                    )}
-                  </svg>
-                  {!history.length && (
-                    <span className="chart-empty">
-                      Waiting for the first analysis window
-                    </span>
-                  )}
-                </div>
-                <div className="chart-footer">
-                  <span>Recent analysis windows</span>
-                  <span>
-                    {score?.inference_ms != null
-                      ? `${Math.round(score.inference_ms)} ms inference`
-                      : "No score yet"}
-                  </span>
-                </div>
-              </div>
+              <AudioHistory history={history} score={score} />
             </div>
             <div className="panel-body">
               {session && active && (
@@ -890,7 +836,7 @@ function App() {
           </section>
           <section className="panel signals-panel">
             <div className="panel-heading">
-              <h2>Signals</h2>
+              <h2>Analysis</h2>
               <Icon name="grid" size={17} />
             </div>
             <div className="panel-body">

@@ -1,3 +1,4 @@
+import AudioHistory from "./AudioHistory";
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { CallClient } from "./services/call";
@@ -36,6 +37,7 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
   const [scenario, setScenario] = useState("");
   const [relay, setRelay] = useState(false);
   const [qr, setQr] = useState("");
+  const [history, setHistory] = useState([]);
   const [levels, setLevels] = useState(Array(40).fill(3));
   const [verification, setVerification] = useState(null);
   const [tamper, setTamper] = useState("");
@@ -115,6 +117,7 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
     if (starting || active) return;
     const run = ++generation.current;
     setStarting(true);
+    setHistory([]);
     setError("");
     setVerification(null);
     setTamper("");
@@ -136,6 +139,8 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
         ...update,
         ...(update.analysisState === "Unavailable" ? { score: null } : {}),
       }));
+      if (update.analysisState === "Unavailable") setHistory([]);
+      else if (update.score) setHistory(previous => [...previous.slice(-39), update.score.spoof_probability]);
       if (update.error) setError(update.error);
     });
     client.current = connection;
@@ -221,7 +226,7 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
           </button>
         )}
       </header>}
-      <div className="page">
+      <div className="page live-page">
         <div className="page-heading">
           <div>
             <h1>{invite ? "Join voice call" : "Live Call"}</h1>
@@ -263,14 +268,17 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
           </section>
         ) : (
           <>
-            {health?.demo_mode && (
+            {!embedded && health?.demo_mode && (
               <p className="notice">
                 Demo · simulated detector. Scores are not detection evidence.
               </p>
             )}
-            <section className="panel panel-body call-setup">
-              <div className="call-controls">
-                {!invite && (
+            <div className={invite ? "live-workspace caller-workspace" : "live-workspace"}>
+              <section className="panel sources-panel call-setup">
+                <div className="panel-heading"><h2>Setup</h2></div>
+                <div className="panel-body call-source-body">
+                  <div className="source-device"><div><strong>{invite ? "Your microphone" : "Remote caller"}</strong><small>{invite ? "Audio shared with the operator" : "Received audio is used for analysis"}</small></div></div>
+                                  {!invite && (
                   <>
                     <label>
                       Detector mode
@@ -306,7 +314,63 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
                     </label>
                   </>
                 )}
-                {!active && (
+
+                                {data.inviteUrl && (
+                <div className="invitation">
+                  <label>
+                    Caller invitation URL
+                    <input readOnly value={data.inviteUrl} />
+                  </label>
+                  {qr && (
+                    <img
+                      src={qr}
+                      alt="Scan to join this call"
+                      width="160"
+                      height="160"
+                    />
+                  )}
+                  <p className="subtle">
+                    Share privately. For a phone, open the operator page using
+                    your trusted HTTPS LAN or public address before creating the
+                    invitation.
+                  </p>
+                </div>
+              )}
+
+                  {!invite && !data.inviteUrl && <p className="subtle">Create a call to get a private invitation link and QR code.</p>}
+                                <p>
+                Connection route:{" "}
+                <span aria-label="Connection route">
+                  {data.connection?.route || "Unknown"}
+                </span>
+              </p>
+
+                </div>
+                <div className="panel-footnote">Share invitations only with your intended caller.</div>
+              </section>
+              <section className="panel analysis-panel">
+                <div className="panel-heading"><h2>Audio &amp; controls</h2><span className="subtle" role="status">{data.callState}</span></div>
+                <div className="panel-body">
+                  <audio ref={audio} autoPlay playsInline />
+                  <div className="waveform-area lavender">
+                    <div className="waveform-title"><span>Live audio</span><span>{active ? "Listening" : "Standby"}</span></div>
+                    <div className="waveform" aria-label="Received caller audio level">{levels.map((height, i) => <i key={i} style={{ height: height + "%" }} />)}</div>
+                    <span className="waveform-caption">{active ? "Audio received from the other device" : "Create or join a call to see received audio here"}</span>
+                  </div>
+                  <label className="call-audio-level">Received audio<meter min="0" max="1" value={data.audioLevel || 0} /></label>
+                  {!invite && <AudioHistory history={history} score={data.score} />}
+                                {data.playbackBlocked && (
+                <button
+                  className="button secondary"
+                  onClick={() => client.current?.play()}
+                >
+                  Enable audio playback
+                </button>
+              )}
+
+                  {data.session && active && !invite && <Enrollment key={data.session.session_id} sessionId={data.session.session_id} disabled={data.analysisState === "Unavailable"} />}
+                </div>
+                <div className="call-controls">                {!active && (
                   <button
                     className="button primary"
                     disabled={starting || !online || (invite && !invite.token)}
@@ -334,67 +398,18 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
                       {data.muted ? "Unmute microphone" : "Mute microphone"}
                     </button>
                   </>
-                )}
-              </div>
-              <p role="status">{data.callState}</p>
-              {data.playbackBlocked && (
-                <button
-                  className="button secondary"
-                  onClick={() => client.current?.play()}
-                >
-                  Enable audio playback
-                </button>
-              )}
-              {data.inviteUrl && (
-                <div className="invitation">
-                  <label>
-                    Caller invitation URL
-                    <input readOnly value={data.inviteUrl} />
-                  </label>
-                  {qr && (
-                    <img
-                      src={qr}
-                      alt="Scan to join this call"
-                      width="160"
-                      height="160"
-                    />
-                  )}
-                  <p className="subtle">
-                    Share privately. For a phone, open the operator page using
-                    your trusted HTTPS LAN or public address before creating the
-                    invitation.
-                  </p>
-                </div>
-              )}
-              <audio ref={audio} autoPlay playsInline />
-              <label>
-                Received audio
-                <meter min="0" max="1" value={data.audioLevel || 0} />
-              </label>
-              <div
-                className="waveform lavender"
-                aria-label="Received caller audio level"
-              >
-                {levels.map((height, i) => (
-                  <i key={i} style={{ height: `${height}%` }} />
-                ))}
-              </div>
-              <p>
-                Connection route:{" "}
-                <span aria-label="Connection route">
-                  {data.connection?.route || "Unknown"}
-                </span>
-              </p>
-            </section>
+                )}</div>
+              </section>
             {!invite && (
-              <section className="panel panel-body">
-                <h2>Caller analysis</h2>
+              <section className="panel signals-panel">
+                <div className="panel-heading"><h2>Analysis</h2></div>
+                <div className="panel-body">
                 <p role="status">{data.analysisState}</p>
                 {data.analysisError && (
                   <p className="notice error">{data.analysisError}</p>
                 )}
-                <div className="verdict-signals">
-                  <div className="signal-tile mint">
+                <div className="call-signal-list">
+                  <div className={`signal-tile ${data.score?.risk === "RED" ? "rose" : data.score?.risk === "AMBER" ? "peach" : data.score ? "mint" : "neutral"}`}>
                     <div>
                       <span>Spoof probability</span>
                       <strong>
@@ -432,15 +447,10 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
                     Manual verification prompt: {data.score.challenge.phrase}
                   </p>
                 )}
-                {data.session && active && (
-                  <Enrollment
-                    key={data.session.session_id}
-                    sessionId={data.session.session_id}
-                    disabled={data.analysisState === "Unavailable"}
-                  />
-                )}
+                </div>
               </section>
             )}
+            </div>
             {final && (
               <section className="panel panel-body">
                 <h2>
