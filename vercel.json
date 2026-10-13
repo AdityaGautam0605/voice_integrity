@@ -4,14 +4,28 @@
     {
       "source": "/api/:path*",
       "destination": "https://voice-integrity-backend.onrender.com/:path*"
+    },
+    {
+      "source": "/call",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/join/:path*",
+      "destination": "/index.html"
     }
   ],
   "headers": [
     {
       "source": "/api/:path*",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store" },
-        { "key": "x-vercel-enable-rewrite-caching", "value": "0" }
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "x-vercel-enable-rewrite-caching",
+          "value": "0"
+        }
       ]
     }
   ]
