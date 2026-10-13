@@ -1,5 +1,6 @@
 import { createCall, getCallIce } from "./api";
-import { opened, socketUrl } from "./websocket";
+import { opened } from "./websocket";
+import { signalingUrl } from "./signaling-url";
 import { AnalysisClient } from "./analysis";
 import {
   summarizeConnectionStats,
@@ -95,7 +96,7 @@ export class CallClient {
       }
     };
     const ws = (this.signal = new WebSocket(
-      socketUrl(`/v1/calls/${room.call_id}/signal`),
+      signalingUrl(`/v1/calls/${room.call_id}/signal`, window.location.href, import.meta.env.VITE_SIGNALING_ORIGIN || ""),
     ));
     let processing = Promise.resolve();
     ws.onmessage = ({ data }) => {

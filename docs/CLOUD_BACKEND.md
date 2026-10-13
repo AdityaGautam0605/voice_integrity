@@ -80,3 +80,29 @@ cookie handling, and WebSocket authentication.
 Verify operator sign-in, session creation, a streaming connection, a signed
 verdict, and the audit trail from the public frontend before calling the
 deployment connected.
+
+## Vercel page routing and deployment checks
+
+The root `vercel.json` forwards `/api/*` to Render and serves `index.html`
+for `/call` and `/join/*`. Keep the API rule separate from page routing so
+API failures do not return the app HTML. Deploy this file with the frontend;
+local edits do not change an existing Vercel deployment.
+
+Use the production URL `https://voice-integrity-omega.vercel.app` when testing.
+The backend `VIF_PUBLIC_ORIGIN` must exactly match the browser origin. A unique
+Vercel deployment URL is a different origin and will fail protected mutations.
+Do not disable origin checks to enable arbitrary preview URLs.
+
+Check `/api/health` on the production frontend. A JSON response with
+`status: "ok"` confirms HTTP connectivity. `detection_available: false` means
+the API is reachable but the detector is disabled; it is not a network failure.
+If the backend has been idle, let it start and retry the health check.
+Sign in using the Render service's `VIF_OPERATOR_CODE`, not a local launcher code.
+Never put that code into frontend environment variables or commit it.
+
+After redeploying, open `/call` directly and refresh it. Check an invitation
+page too, then verify authenticated signaling and audio streaming separately.
+A passing HTTP health check does not establish WebSocket connectivity.
+
+Call pairing now uses VITE_SIGNALING_ORIGIN (a public HTTPS origin) to connect directly to Render. The production environment file supplies the existing Render hostname; local development keeps the same-origin proxy. Pairing still checks the frontend origin and authenticates with the room token in the first message. HTTP APIs and cookie-authenticated analysis sockets retain their existing route. This fixes pairing only; it does not enable detection or prove the analysis WebSocket proxy works. Redeploy the frontend after changing this build-time setting.
+
