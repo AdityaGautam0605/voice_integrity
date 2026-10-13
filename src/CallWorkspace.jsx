@@ -21,7 +21,7 @@ const invitation = () => {
       }
     : null;
 };
-export default function CallWorkspace() {
+export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
   const [invite] = useState(invitation);
   const [access, setAccess] = useState(null);
   const [health, setHealth] = useState(null);
@@ -45,6 +45,7 @@ export default function CallWorkspace() {
   const client = useRef(null);
   const generation = useRef(0);
   const active = !["Ready", "Ended"].includes(data.callState);
+  useEffect(() => { onBusyChange?.(active || starting); }, [active, starting, onBusyChange]);
   const allowed =
     invite || (access && (!access.online_mode || access.authenticated));
   useEffect(() => {
@@ -173,6 +174,7 @@ export default function CallWorkspace() {
   async function signOut() {
     try {
       await logoutOperator();
+      if (embedded) window.dispatchEvent(new Event("vif:operator-auth-required"));
       setAccess({ online_mode: true, authenticated: false });
       setData({ callState: "Ready", audioLevel: 0 });
       setVerification(null);
@@ -203,8 +205,8 @@ export default function CallWorkspace() {
   const final = data.verdict?.payload;
   const integrity = verification?.signature_valid ?? verification?.valid;
   return (
-    <div className="app">
-      <header className="app-header">
+    <div className={embedded ? "embedded-call" : "app"}>
+      {!embedded && <header className="app-header">
         <a className="brand" href="/">
           Voice Integrity
         </a>
@@ -218,11 +220,11 @@ export default function CallWorkspace() {
             Sign out
           </button>
         )}
-      </header>
-      <main className="page">
+      </header>}
+      <div className="page">
         <div className="page-heading">
           <div>
-            <h1>{invite ? "Join voice call" : "Two-device call"}</h1>
+            <h1>{invite ? "Join voice call" : "Live Call"}</h1>
             <p>
               {invite
                 ? "Your voice is analyzed by the operator’s workspace."
@@ -230,6 +232,7 @@ export default function CallWorkspace() {
             </p>
           </div>
         </div>
+        {embedded && access?.online_mode && access.authenticated && <button className="button secondary" disabled={active || starting} onClick={signOut}>Sign out</button>}
         {error && (
           <p className="notice error" role="alert">
             {error}
@@ -470,7 +473,7 @@ export default function CallWorkspace() {
             )}
           </>
         )}
-      </main>
+      </div>
     </div>
   );
 }

@@ -218,6 +218,9 @@ test("live microphone, streamed scores, gate alert and finalized verdict", async
   page.on("pageerror", (err) => errors.push(err.message));
   const api = await fixture(page, { risk: "RED" });
   await page.goto("/");
+  await page.getByRole("button", { name: "Live Call", exact: true }).click();
+  await page.getByRole("button", { name: "Test my microphone", exact: true }).click();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   await page.getByRole("button", { name: "New session", exact: true }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.screenshot({
@@ -269,9 +272,15 @@ test("empty states, denied microphone, modal keyboard dismissal and mobile layou
     page.getByRole("heading", { name: "Your sessions will live here" }),
   ).toBeVisible();
   await noOverflow(page);
+  await page.getByRole("button", { name: "Live Call", exact: true }).click();
+  await page.getByRole("button", { name: "Test my microphone", exact: true }).click();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   await page.getByRole("button", { name: "New session", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "Live Call", exact: true }).click();
+  await page.getByRole("button", { name: "Test my microphone", exact: true }).click();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   await page.getByRole("button", { name: "New session", exact: true }).click();
   await page
     .getByRole("button", { name: "Start session", exact: true })
@@ -337,6 +346,9 @@ test("waveform follows actual input level and clears after silence and stop", as
 }) => {
   await fixture(page, { volume: 0 });
   await page.goto("/");
+  await page.getByRole("button", { name: "Live Call", exact: true }).click();
+  await page.getByRole("button", { name: "Test my microphone", exact: true }).click();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   await page.getByRole("button", { name: "New session", exact: true }).click();
   await page
     .getByRole("button", { name: "Start session", exact: true })
@@ -346,12 +358,12 @@ test("waveform follows actual input level and clears after silence and stop", as
   ).toBeVisible();
   const newest = () =>
     page
-      .locator(".waveform i")
+      .locator(".waveform:visible i")
       .last()
       .evaluate((bar) => parseFloat(bar.style.height));
   const peak = () =>
     page
-      .locator(".waveform i")
+      .locator(".waveform:visible i")
       .evaluateAll((bars) =>
         Math.max(...bars.map((bar) => parseFloat(bar.style.height))),
       );
@@ -405,6 +417,7 @@ test("responsive layout adapts to narrow, landscape and ultrawide screens", asyn
         expect(box.x + box.width).toBeLessThanOrEqual(width + 1);
         expect(box.height).toBeGreaterThanOrEqual(44);
       }
+      if (title === "Live Call") await page.getByRole("button", { name: "Test my microphone", exact: true }).click();
       if (title === "Live Call" && width <= 800) {
         const analysis = await page.locator(".analysis-panel").boundingBox();
         const sources = await page.locator(".sources-panel").boundingBox();
@@ -462,6 +475,9 @@ test("lost local analysis releases the microphone and removes stale scores", asy
     route.fulfill({ status: 404, json: { detail: "No final verdict" } }),
   );
   await page.goto("/");
+  await page.getByRole("button", { name: "Live Call", exact: true }).click();
+  await page.getByRole("button", { name: "Test my microphone", exact: true }).click();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   await page.getByRole("button", { name: "New session", exact: true }).click();
   await page
     .getByRole("button", { name: "Start session", exact: true })
@@ -481,4 +497,18 @@ test("lost local analysis releases the microphone and removes stale scores", asy
   await expect(
     page.getByText("No active session", { exact: true }),
   ).toBeVisible();
+});
+
+test("unified call defaults to another device and keeps microphone testing secondary", async ({ page }) => {
+  await fixture(page);
+  await page.goto('/call');
+  await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Call another device', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Create call', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Two-device call', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Test my microphone', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Create call', exact: true })).toBeHidden();
+  await page.getByRole('button', { name: 'Call another device', exact: true }).click();
+  await page.setViewportSize({ width: 360, height: 800 });
+  await noOverflow(page);
 });

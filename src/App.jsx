@@ -172,7 +172,10 @@ function Modal({ title, children, onClose }) {
 }
 
 function App() {
-  const [page, setPage] = useState("Dashboard");
+  const [page, setPage] = useState(window.location.pathname === "/call" ? "Live Call" : "Dashboard");
+  const [callMode, setCallMode] = useState("call");
+  const [callBusy, setCallBusy] = useState(false);
+  const startNewSession = () => callMode === "microphone" && !callBusy ? setNewSession(true) : setPage("Live Call");
   const [operator, setOperator] = useState(null);
   const [operatorCode, setOperatorCode] = useState("");
   const [authError, setAuthError] = useState("");
@@ -544,7 +547,7 @@ function App() {
     <button
       className="button primary"
       disabled={busy}
-      onClick={() => (active ? setPage("Live Call") : setNewSession(true))}
+      onClick={() => (active ? setPage("Live Call") : startNewSession())}
     >
       <Icon name={active ? "wave" : "plus"} size={17} />
       {active ? "Open live session" : "New session"}
@@ -638,7 +641,7 @@ function App() {
             className="session-card create-card"
             disabled={busy}
             onClick={() =>
-              active ? setPage("Live Call") : setNewSession(true)
+              active ? setPage("Live Call") : startNewSession()
             }
           >
             <span className="create-icon">
@@ -1393,13 +1396,7 @@ function App() {
           ))}
         </nav>
         <div className="header-status">
-          <button
-            className="button secondary"
-            disabled={active || busy}
-            onClick={() => window.location.assign("/call")}
-          >
-            Two-device call
-          </button>
+
           <span
             className={`connection-dot ${canAccess && health ? "connected" : ""}`}
           />
@@ -1480,12 +1477,20 @@ function App() {
         ) : page === "Dashboard" ? (
           renderDashboard()
         ) : page === "Live Call" ? (
-          renderLive()
+          <>
+            <div className="call-mode-switch" role="group" aria-label="Live call mode">
+              <button className={`button ${callMode === "call" ? "primary" : "secondary"}`} aria-pressed={callMode === "call"} disabled={active || busy || callBusy} onClick={() => setCallMode("call")}>Call another device</button>
+              <button className={`button ${callMode === "microphone" ? "primary" : "secondary"}`} aria-pressed={callMode === "microphone"} disabled={active || busy || callBusy} onClick={() => setCallMode("microphone")}>Test my microphone</button>
+            </div>
+            {(active || busy || callBusy) && <p className="call-mode-note">End the current session before switching modes.</p>}
+            {callMode === "microphone" && renderLive()}
+          </>
         ) : page === "Verdict" ? (
           renderVerdict()
         ) : (
           renderAudit()
         )}
+        {canAccess && <div hidden={page !== "Live Call" || callMode !== "call"}><CallWorkspace embedded onBusyChange={setCallBusy} /></div>}
       </main>
       <footer className="app-footer">
         <Icon name="wave" size={14} />
@@ -1575,8 +1580,7 @@ function App() {
 }
 
 export default function RootApp() {
-  return window.location.pathname === "/call" ||
-    window.location.pathname.startsWith("/join/") ? (
+  return window.location.pathname.startsWith("/join/") ? (
     <CallWorkspace />
   ) : (
     <App />

@@ -65,3 +65,6 @@ set VIF_VAD=energy
 ```
 
 Real trained detector weights, calibration, and accuracy evaluation remain outside these changes. No simulated result should be presented as real detection evidence.
+
+Live Call now contains Call another device (default) and Test my microphone modes. The /call route opens this unified workspace; /join invitations remain caller-only. Switching modes is disabled during a session, and navigating between workspace pages preserves an active call.
+

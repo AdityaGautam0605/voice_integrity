@@ -64,22 +64,22 @@ test("online operator signs in, receives errors for bad codes, and signs out", a
   await onlineApi(page);
   await page.goto("/call");
   await expect(
-    page.getByRole("heading", { name: "Sign in to create a call" }),
+    page.getByRole("heading", { name: "Welcome to your workspace" }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Create call", exact: true }),
   ).toHaveCount(0);
-  await page.getByLabel("Operator access code").fill("wrong-code");
+  await page.getByLabel("Operator code").fill("wrong-code");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Invalid access code");
-  await page.getByLabel("Operator access code").fill("fixture-access");
+  await page.getByLabel("Operator code").fill("fixture-access");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Create call", exact: true }),
   ).toBeEnabled();
   await expect(page.getByLabel("Force relay", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page.getByLabel("Operator access code")).toHaveValue("");
+  await expect(page.getByLabel("Operator code")).toHaveValue("");
 });
 
 test("caller invitations bypass the operator sign-in screen", async ({
@@ -90,7 +90,7 @@ test("caller invitations bypass the operator sign-in screen", async ({
   await expect(
     page.getByRole("button", { name: "Join call", exact: true }),
   ).toBeEnabled();
-  await expect(page.getByLabel("Operator access code")).toHaveCount(0);
+  await expect(page.getByLabel("Operator code")).toHaveCount(0);
   await expect(page.getByLabel("Force relay", { exact: false })).toHaveCount(0);
 });
 
@@ -167,7 +167,7 @@ test("expired operator access returns to sign-in and releases the microphone", a
   });
   await page.goto("/call");
   await page.getByRole("button", { name: "Create call", exact: true }).click();
-  await expect(page.getByLabel("Operator access code")).toBeVisible();
+  await expect(page.getByLabel("Operator code")).toBeVisible();
   expect(
     await page.evaluate(() =>
       window.fixtureMicrophone

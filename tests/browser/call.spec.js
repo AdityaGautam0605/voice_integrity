@@ -21,7 +21,7 @@ async function fakeMicrophone(page) {
 async function pair(operator, caller, scenario = "", again = false) {
   if (!again) await operator.goto("/call");
   await expect(
-    operator.getByText("Backend ready", { exact: true }),
+    operator.getByText("Workspace connected", { exact: true }),
   ).toBeVisible();
   await operator.getByLabel("Detector mode").selectOption(scenario);
   await operator
