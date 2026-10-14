@@ -53,36 +53,44 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
     invite || (access && (!access.online_mode || access.authenticated));
   useEffect(() => {
     let cancelled = false;
+    let timer;
+    let accessResolved = !!invite;
+    const controller = new AbortController();
     const refresh = async () => {
       try {
-        const value = await checkBackend();
-        if (!cancelled) {
-          setHealth(value);
-          setOnline(true);
+        const value = await checkBackend(controller.signal);
+        if (cancelled) return;
+        setHealth(value);
+        setOnline(true);
+        if (!accessResolved) {
+          const access = await checkOperator(controller.signal);
+          if (cancelled || accessResolved) return;
+          accessResolved = true;
+          setAccess(access);
+          setError("");
         }
       } catch {
-        if (!cancelled) setOnline(false);
+        if (!cancelled) {
+          setOnline(false);
+          if (!accessResolved) setError("The backend is taking longer to respond. Retrying automatically…");
+        }
+      } finally {
+        if (!cancelled) timer = setTimeout(refresh, 5000);
       }
     };
-    if (!invite)
-      checkOperator()
-        .then((value) => {
-          if (!cancelled) setAccess(value);
-        })
-        .catch((err) => {
-          if (!cancelled) setError(err.message);
-        });
     const expired = () => {
+      accessResolved = true;
       setAccess({ online_mode: true, authenticated: false });
       void client.current?.end();
       setCode("");
     };
     window.addEventListener("vif:operator-auth-required", expired);
     void refresh();
-    const timer = setInterval(refresh, 5000);
+
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      clearTimeout(timer);
+      controller.abort();
       window.removeEventListener("vif:operator-auth-required", expired);
       void client.current?.end();
     };

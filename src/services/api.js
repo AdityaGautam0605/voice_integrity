@@ -1,9 +1,9 @@
-async function request(path, body, operator = true) {
+async function request(path, body, operator = true, signal) {
   const response = await fetch(`/api${path}`, {
     method: body === undefined ? "GET" : "POST",
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(15000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
     credentials: "same-origin",
   });
   if (!response.ok) {
@@ -21,8 +21,8 @@ async function request(path, body, operator = true) {
   }
   return response.json();
 }
-export const checkBackend = () => request("/health", undefined, false);
-export const checkOperator = () => request("/v1/operator", undefined, false);
+export const checkBackend = (signal) => request("/health", undefined, false, signal);
+export const checkOperator = (signal) => request("/v1/operator", undefined, false, signal);
 export const loginOperator = (code) =>
   request("/v1/operator/login", { code }, false);
 export const logoutOperator = () => request("/v1/operator/logout", {}, false);

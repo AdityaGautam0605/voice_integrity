@@ -216,7 +216,11 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let timer;
+    let accessResolved = false;
+    const controller = new AbortController();
     const requireSignIn = () => {
+      accessResolved = true;
       setOperator({ online_mode: true, authenticated: false });
       setAudit(null);
       setActive(false);
@@ -232,23 +236,32 @@ function App() {
       setAuthError("Your session expired. Please sign in again.");
     };
     window.addEventListener("vif:operator-auth-required", requireSignIn);
-    checkOperator()
-      .then((value) => {
-        if (!cancelled) {
-          setOperator(value);
+    const refresh = async () => {
+      try {
+        const health = await checkBackend(controller.signal);
+        if (cancelled) return;
+        setHealth(health);
+        if (!accessResolved) {
+          const access = await checkOperator(controller.signal);
+          if (cancelled || accessResolved) return;
+          accessResolved = true;
+          setOperator(access);
           setAuthError("");
         }
-      })
-      .catch((err) => {
-        if (!cancelled) setAuthError(err.message);
-      });
-    checkBackend()
-      .then((value) => {
-        if (!cancelled) setHealth(value);
-      })
-      .catch(() => {});
+      } catch {
+        if (!cancelled) {
+          setHealth(null);
+          if (!accessResolved) setAuthError("The backend is taking longer to respond. Retrying automatically…");
+        }
+      } finally {
+        if (!cancelled) timer = setTimeout(refresh, 5000);
+      }
+    };
+    void refresh();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
       window.removeEventListener("vif:operator-auth-required", requireSignIn);
     };
   }, [attempt]);
@@ -287,22 +300,6 @@ function App() {
     };
   }, [canAccess, verdict, page, auditOffset, query, riskFilter, auditVersion]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const timer = setInterval(() => {
-      checkBackend()
-        .then((value) => {
-          if (!cancelled) setHealth(value);
-        })
-        .catch(() => {
-          if (!cancelled) setHealth(null);
-        });
-    }, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
 
   useEffect(() => {
     if (!active) return;

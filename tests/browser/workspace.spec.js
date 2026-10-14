@@ -560,3 +560,32 @@ test("theme toggle persists and sign-in matches both themes on mobile and deskto
   await page.getByRole('button', {name:'Test my microphone',exact:true}).click();
   await noOverflow(page);
 });
+test("startup retries failed operator checks after a slow backend without overlapping health polls", async ({page}) => {
+  await fixture(page, {auth:true});
+  let operators = 0;
+  const pending = new Set();
+  let maximum = 0;
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/health') {
+      pending.add(request);
+      maximum = Math.max(maximum, pending.size);
+    }
+  });
+  page.on('requestfinished', request => pending.delete(request));
+  page.on('requestfailed', request => pending.delete(request));
+  await page.route('**/api/health', async route => {
+    await new Promise(resolve => setTimeout(resolve, 6000));
+
+    await route.fulfill({json:{status:'ok',online_mode:true}});
+  });
+  await page.route('**/api/v1/operator', async route => {
+    operators++;
+    if (operators === 1) return route.abort('failed');
+    await route.fulfill({json:{online_mode:true, authenticated:false}});
+  });
+  await page.goto('/');
+  await expect(page.getByText('The backend is taking longer to respond. Retrying automatically…')).toBeVisible({timeout:12000});
+  await expect(page.getByRole('heading',{name:'Welcome to your workspace'})).toBeVisible({timeout:20000});
+  expect(operators).toBe(2);
+  expect(maximum).toBe(1);
+});
