@@ -536,3 +536,27 @@ test("both live modes share panels and fit phone tablet and desktop screens", as
     }
   }
 });
+test("theme toggle persists and sign-in matches both themes on mobile and desktop", async ({ page }) => {
+  await page.emulateMedia({colorScheme: 'light'});
+  await fixture(page, {auth: true});
+  await page.goto('/');
+  await expect(page.getByRole('heading', {name: 'Welcome to your workspace'})).toBeVisible();
+  await page.getByRole('button', {name: 'Switch to dark mode'}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+  await page.screenshot({path: 'test-results/sign-in-dark.png', fullPage: true});
+  await page.setViewportSize({width: 360, height: 800});
+  await noOverflow(page);
+  await page.getByRole('button', {name: 'Switch to light mode'}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+  await page.getByLabel('Operator code', {exact:true}).fill('fixture-access');
+  await page.getByRole('button', {name:'Sign in',exact:true}).click();
+  await page.getByRole('button', {name:'Live Call',exact:true}).click();
+  await page.getByRole('button', {name:'Switch to dark mode'}).click();
+  await noOverflow(page);
+  await page.setViewportSize({width:1440,height:1000});
+  await page.screenshot({path:'test-results/workspace-dark.png',fullPage:true});
+  await page.getByRole('button', {name:'Test my microphone',exact:true}).click();
+  await noOverflow(page);
+});

@@ -1,3 +1,4 @@
+import ThemeToggle from "./ThemeToggle";
 import AudioHistory from "./AudioHistory";
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
@@ -215,6 +216,7 @@ export default function CallWorkspace({ embedded = false, onBusyChange } = {}) {
         <a className="brand" href="/">
           Voice Integrity
         </a>
+        <ThemeToggle />
         <span>{online ? "Backend ready" : "Backend unavailable"}</span>
         {!invite && access?.online_mode && access.authenticated && (
           <button

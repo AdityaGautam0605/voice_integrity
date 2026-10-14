@@ -1,3 +1,5 @@
+import ThemeToggle from "./ThemeToggle";
+import SignIn from "./SignIn";
 import AudioHistory from "./AudioHistory";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -1358,6 +1360,7 @@ function App() {
           ))}
         </nav>
         <div className="header-status">
+          <ThemeToggle />
 
           <span
             className={`connection-dot ${canAccess && health ? "connected" : ""}`}
@@ -1413,37 +1416,7 @@ function App() {
             )}
           </section>
         ) : !canAccess ? (
-          <section className="panel access-panel">
-            <span className="empty-icon">
-              <Icon name="shield" size={28} />
-            </span>
-            <h1>Welcome to your workspace</h1>
-            <p>Enter the operator code from your demo launcher to continue.</p>
-            <form onSubmit={signIn}>
-              <label htmlFor="operator-code">Operator code</label>
-              <input
-                id="operator-code"
-                type="password"
-                required
-                autoComplete="current-password"
-                maxLength={256}
-                value={operatorCode}
-                onChange={(event) => setOperatorCode(event.target.value)}
-                disabled={authBusy}
-              />
-              {authError && (
-                <p className="notice error" role="alert">
-                  {authError}
-                </p>
-              )}
-              <button
-                className="button primary"
-                disabled={authBusy || !operatorCode.trim()}
-              >
-                {authBusy ? "Signing in…" : "Sign in"}
-              </button>
-            </form>
-          </section>
+          <SignIn code={operatorCode} setCode={setOperatorCode} busy={authBusy} error={authError} onSubmit={signIn} />
         ) : page === "Dashboard" ? (
           renderDashboard()
         ) : page === "Live Call" ? (

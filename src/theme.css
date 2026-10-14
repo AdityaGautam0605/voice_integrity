@@ -1,0 +1,231 @@
+:root {
+  --palette-eeedf2: #eeedf2;
+  --palette-ffffff: #ffffff;
+  --palette-202124: #202124;
+  --palette-eeebfb: #eeebfb;
+  --palette-47377b: #47377b;
+  --palette-f5f4f8: #f5f4f8;
+  --palette-65636e: #65636e;
+  --palette-428168: #428168;
+  --palette-eee8fc: #eee8fc;
+  --palette-675094: #675094;
+  --palette-765727: #765727;
+  --palette-fcf7ec: #fcf7ec;
+  --palette-806f56: #806f56;
+  --palette-77717f: #77717f;
+  --palette-74717d: #74717d;
+  --palette-dedde5: #dedde5;
+  --palette-37363b: #37363b;
+  --palette-f5f3fa: #f5f3fa;
+  --palette-7150b5: #7150b5;
+  --palette-f0edf6: #f0edf6;
+  --palette-efebfa: #efebfa;
+  --palette-e4f3eb: #e4f3eb;
+  --palette-e5f2f8: #e5f2f8;
+  --palette-fbefe5: #fbefe5;
+  --palette-fbe8e8: #fbe8e8;
+  --palette-f4f3f6: #f4f3f6;
+  --palette-ffffff70: #ffffff70;
+  --palette-636471: #636471;
+  --palette-b9abda: #b9abda;
+  --palette-66636e: #66636e;
+  --palette-d6d0e4: #d6d0e4;
+  --palette-8064be: #8064be;
+  --palette-8b819c: #8b819c;
+  --palette-50495d: #50495d;
+  --palette-7d7786: #7d7786;
+  --palette-7c7687: #7c7687;
+  --palette-514a5f: #514a5f;
+  --palette-eceaf0: #eceaf0;
+  --palette-625c70: #625c70;
+  --palette-d0efde: #d0efde;
+  --palette-215d41: #215d41;
+  --palette-ffe6bc: #ffe6bc;
+  --palette-835017: #835017;
+  --palette-f8d2d2: #f8d2d2;
+  --palette-9b3030: #9b3030;
+  --palette-e7e5ed: #e7e5ed;
+  --palette-efedf3: #efedf3;
+  --palette-7e778c: #7e778c;
+  --palette-80798c: #80798c;
+  --palette-f6f5f8: #f6f5f8;
+  --palette-847c90: #847c90;
+  --palette-80798b: #80798b;
+  --palette-81788e: #81788e;
+  --palette-867a9e: #867a9e;
+  --palette-9e85d5: #9e85d5;
+  --palette-867c9b: #867c9b;
+  --palette-ece9f2: #ece9f2;
+  --palette-7659b0: #7659b0;
+  --palette-9c95a7: #9c95a7;
+  --palette-eeebf3: #eeebf3;
+  --palette-8d6ccb: #8d6ccb;
+  --palette-9b92a8: #9b92a8;
+  --palette-938a9f: #938a9f;
+  --palette-8268b7: #8268b7;
+  --palette-777082: #777082;
+  --palette-eed7b4: #eed7b4;
+  --palette-7e6b50: #7e6b50;
+  --palette-63736b: #63736b;
+  --palette-bdcfc3: #bdcfc3;
+  --palette-81798d: #81798d;
+  --palette-ece9f1: #ece9f1;
+  --palette-e4e0ec: #e4e0ec;
+  --palette-8a809b: #8a809b;
+  --palette-f7f5fa: #f7f5fa;
+  --palette-726a80: #726a80;
+  --palette-716a7e: #716a7e;
+  --palette-f6f3fd: #f6f3fd;
+  --palette-5c428e: #5c428e;
+  --palette-8c839a: #8c839a;
+  --palette-f6f3fb: #f6f3fb;
+  --palette-6c5d85: #6c5d85;
+  --palette-fceded: #fceded;
+  --palette-a33c3c: #a33c3c;
+  --palette-f0ecfa: #f0ecfa;
+  --palette-9277c5: #9277c5;
+  --palette-888092: #888092;
+  --palette-837a90: #837a90;
+  --palette-dcd5e7: #dcd5e7;
+  --palette-9a93a3: #9a93a3;
+  --palette-b1aab8: #b1aab8;
+  --palette-e7e1f0: #e7e1f0;
+  --palette-29252f: #29252f;
+  --palette-23163025: #23163025;
+  --palette-28232f55: #28232f55;
+  --palette-857b91: #857b91;
+  --palette-d9d0e7: #d9d0e7;
+  --palette-fcfbfe: #fcfbfe;
+  --palette-8c8198: #8c8198;
+  --palette-503485: #503485;
+  --palette-ddd6e8: #ddd6e8;
+  --palette-8f77d2: #8f77d2;
+  --palette-e8e1fb: #e8e1fb;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --palette-eeedf2: hsl(252 16% 22%);
+  --palette-ffffff: #191b23;
+  --palette-202124: #eeedf5;
+  --palette-eeebfb: #35304d;
+  --palette-47377b: hsl(254 38% 76%);
+  --palette-f5f4f8: hsl(255 22% 20%);
+  --palette-65636e: hsl(251 5% 76%);
+  --palette-428168: hsl(156 32% 76%);
+  --palette-eee8fc: #35304d;
+  --palette-675094: hsl(260 30% 76%);
+  --palette-765727: hsl(36 42% 76%);
+  --palette-fcf7ec: #352e22;
+  --palette-806f56: hsl(36 20% 76%);
+  --palette-77717f: hsl(266 6% 76%);
+  --palette-74717d: hsl(255 5% 76%);
+  --palette-dedde5: hsl(248 13% 26%);
+  --palette-37363b: #dfdbe8;
+  --palette-f5f3fa: hsl(257 41% 20%);
+  --palette-7150b5: hsl(260 41% 76%);
+  --palette-f0edf6: hsl(260 33% 22%);
+  --palette-efebfa: hsl(256 42% 21%);
+  --palette-e4f3eb: #203c33;
+  --palette-e5f2f8: #223747;
+  --palette-fbefe5: #423428;
+  --palette-fbe8e8: #462a32;
+  --palette-f4f3f6: hsl(260 14% 21%);
+  --palette-ffffff70: #00000055;
+  --palette-636471: hsl(236 7% 76%);
+  --palette-b9abda: hsl(258 39% 67%);
+  --palette-66636e: hsl(256 5% 76%);
+  --palette-d6d0e4: hsl(258 27% 28%);
+  --palette-8064be: hsl(259 41% 76%);
+  --palette-8b819c: hsl(262 12% 76%);
+  --palette-50495d: hsl(261 12% 76%);
+  --palette-7d7786: hsl(264 6% 76%);
+  --palette-7c7687: hsl(261 7% 76%);
+  --palette-514a5f: hsl(260 12% 76%);
+  --palette-eceaf0: hsl(260 17% 23%);
+  --palette-625c70: hsl(258 10% 76%);
+  --palette-d0efde: hsl(147 42% 27%);
+  --palette-215d41: hsl(152 42% 91%);
+  --palette-ffe6bc: hsl(38 42% 27%);
+  --palette-835017: hsl(32 42% 76%);
+  --palette-f8d2d2: hsl(260 42% 25%);
+  --palette-9b3030: hsl(260 42% 76%);
+  --palette-e7e5ed: hsl(255 18% 24%);
+  --palette-efedf3: hsl(260 20% 22%);
+  --palette-7e778c: hsl(260 8% 76%);
+  --palette-80798c: hsl(262 8% 76%);
+  --palette-f6f5f8: #11131a;
+  --palette-847c90: hsl(264 8% 76%);
+  --palette-80798b: hsl(263 7% 76%);
+  --palette-81788e: hsl(265 9% 76%);
+  --palette-867a9e: hsl(260 16% 76%);
+  --palette-9e85d5: hsl(259 42% 67%);
+  --palette-867c9b: hsl(259 13% 76%);
+  --palette-ece9f2: hsl(260 26% 23%);
+  --palette-7659b0: hsl(260 36% 76%);
+  --palette-9c95a7: hsl(263 9% 76%);
+  --palette-eeebf3: hsl(263 25% 22%);
+  --palette-8d6ccb: hsl(261 42% 76%);
+  --palette-9b92a8: hsl(265 11% 76%);
+  --palette-938a9f: hsl(266 10% 76%);
+  --palette-8268b7: hsl(260 35% 76%);
+  --palette-777082: hsl(263 7% 76%);
+  --palette-eed7b4: hsl(36 42% 67%);
+  --palette-7e6b50: hsl(35 22% 76%);
+  --palette-63736b: hsl(150 7% 76%);
+  --palette-bdcfc3: hsl(140 16% 67%);
+  --palette-81798d: hsl(264 8% 76%);
+  --palette-ece9f1: hsl(263 22% 23%);
+  --palette-e4e0ec: hsl(260 24% 25%);
+  --palette-8a809b: hsl(262 12% 76%);
+  --palette-f7f5fa: hsl(264 33% 20%);
+  --palette-726a80: hsl(262 9% 76%);
+  --palette-716a7e: hsl(261 9% 76%);
+  --palette-f6f3fd: hsl(258 42% 20%);
+  --palette-5c428e: hsl(261 37% 76%);
+  --palette-8c839a: hsl(263 10% 76%);
+  --palette-f6f3fb: hsl(263 42% 20%);
+  --palette-6c5d85: hsl(263 18% 76%);
+  --palette-fceded: #462a32;
+  --palette-a33c3c: hsl(260 42% 76%);
+  --palette-f0ecfa: hsl(257 42% 21%);
+  --palette-9277c5: hsl(261 40% 76%);
+  --palette-888092: hsl(267 8% 76%);
+  --palette-837a90: hsl(265 9% 76%);
+  --palette-dcd5e7: hsl(263 27% 27%);
+  --palette-9a93a3: hsl(266 8% 76%);
+  --palette-b1aab8: hsl(270 9% 67%);
+  --palette-e7e1f0: hsl(264 33% 24%);
+  --palette-29252f: #eeeaf5;
+  --palette-23163025: #00000055;
+  --palette-28232f55: #00000055;
+  --palette-857b91: hsl(267 9% 76%);
+  --palette-d9d0e7: hsl(263 32% 28%);
+  --palette-fcfbfe: hsl(260 42% 19%);
+  --palette-8c8198: hsl(269 10% 76%);
+  --palette-503485: hsl(261 42% 76%);
+  --palette-ddd6e8: hsl(263 28% 27%);
+  --palette-8f77d2: hsl(256 42% 76%);
+  --palette-e8e1fb: hsl(256 42% 23%);
+  color-scheme: dark;
+}
+
+:root[data-theme="dark"] { background: #11131a; color: #eeedf5; }
+:root[data-theme="dark"] .button.primary, :root[data-theme="dark"] .brand-mark { background: #d5c4fa; color: #211735; }
+:root[data-theme="dark"] .app-header { background: #191b23; }
+:root[data-theme="dark"] input, :root[data-theme="dark"] select { color: #eeedf5; }
+:root[data-theme="dark"] .chart-line { stroke: #c1a5f1; }
+.theme-toggle { gap: 8px; flex-shrink: 0; min-height: 44px; }
+.theme-toggle > span:first-child { font-size: 21px; line-height: 1; }
+.sign-in-page { width: min(1120px, 100%); margin: 0 auto; padding: clamp(32px, 7vw, 100px) 24px; display: grid; grid-template-columns: 1fr 1fr; gap: clamp(28px, 6vw, 80px); align-items: center; }
+.sign-in-story h2 { font-size: clamp(30px, 3.4vw, 48px); letter-spacing: -1.6px; line-height: 1.12; margin: 20px 0; }
+.sign-in-story p, .sign-in-card > p { color: var(--palette-716a7e); line-height: 1.7; }
+.sign-in-art { height: 150px; margin: 36px 0 20px; display: flex; align-items: center; justify-content: center; gap: 9px; border-radius: 24px; background: var(--palette-eeebfb); padding: 26px; }
+.sign-in-art i { width: 8px; border-radius: 12px; background: var(--palette-9277c5); }
+.sign-in-caption { color: var(--palette-716a7e); font-size: 12px; }
+.sign-in-card { padding: clamp(24px, 4vw, 48px); }
+.sign-in-card h1 { font-size: clamp(25px, 2.6vw, 34px); letter-spacing: -1px; margin: 16px 0; }
+.sign-in-card form { display: grid; gap: 14px; margin: 30px 0 22px; }
+.sign-in-card label { font-size: 13px; }
+.sign-in-card input { width: 100%; border: 1px solid var(--palette-ddd6e8); border-radius: 12px; padding: 15px; background: var(--palette-ffffff); color: inherit; }
+.sign-in-card .sign-in-help { font-size: 12px; }
+@media(max-width:800px) { .sign-in-page { grid-template-columns: 1fr; max-width: 540px; gap: 24px; } .sign-in-story h2 { font-size: 30px; } .sign-in-art, .sign-in-caption { display:none; } }

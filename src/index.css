@@ -2,8 +2,8 @@
 
 :root {
   font-family: "DM Sans", "Segoe UI", sans-serif;
-  color: #202124;
-  background: #fff;
+  color: var(--palette-202124);
+  background: var(--palette-ffffff);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -34,7 +34,7 @@ select {
   -webkit-tap-highlight-color: transparent;
 }
 :focus-visible {
-  outline: 3px solid #8f77d2;
+  outline: 3px solid var(--palette-8f77d2);
   outline-offset: 4px;
 }
 button {
@@ -54,5 +54,5 @@ svg {
   flex-shrink: 0;
 }
 ::selection {
-  background: #e8e1fb;
+  background: var(--palette-e8e1fb);
 }
